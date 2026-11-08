@@ -1,0 +1,4 @@
+{
+ global: WMR_GetInstanceProcAddr; WMR_GetDeviceProcAddr; vkNegotiateLoaderLayerInterfaceVersion;
+ local: *;
+};

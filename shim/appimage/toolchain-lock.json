@@ -1,0 +1,11 @@
+{
+  "tool_url": "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage",
+  "tool_sha256": "e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03",
+  "release_asset_digest": "sha256:e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03",
+  "base_image": "docker.io/library/rockylinux@sha256:2d05a9266523bbf24f33ebc3a9832e4d5fd74b973c220f2204ca802286aa275d",
+  "third_party": {
+    "shim/third_party/nlohmann/json.hpp": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63",
+    "shim/third_party/picosha2/picosha2.h": "8f183eaae529cd9d6a3d4843c7559e2a3e3d68b6caaa223e7c24c3c899b3d988"
+  },
+  "release_asset_id": 715388534
+}

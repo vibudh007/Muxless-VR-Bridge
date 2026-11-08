@@ -1,0 +1,3 @@
+FROM docker.io/library/rockylinux@sha256:2d05a9266523bbf24f33ebc3a9832e4d5fd74b973c220f2204ca802286aa275d
+RUN dnf --enablerepo=powertools -y install libstdc++-static gcc-c++ vulkan-loader-devel wayland-devel libdrm-devel pkgconf-pkg-config python3 binutils && dnf clean all
+WORKDIR /work

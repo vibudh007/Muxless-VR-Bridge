@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+/shim/build/
+/shim/build-portable/
+/shim/dist/
+*.AppImage
+*.dmp
+*.log
+/prototype/build/
+/prototype/results/
+*.ppm

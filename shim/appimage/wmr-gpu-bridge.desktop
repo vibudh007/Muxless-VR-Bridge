@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WMR GPU Bridge
+Comment=Install and diagnose cross-GPU SteamVR headset presentation
+Exec=wmr-gpu-bridge-manager
+Icon=wmr-gpu-bridge
+Terminal=true
+Categories=Utility;
