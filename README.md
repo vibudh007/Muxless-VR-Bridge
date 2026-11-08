@@ -1,6 +1,6 @@
 # Muxless VR Bridge
 
-Muxless VR Bridge lets SteamVR and Oasis use a Windows Mixed Reality headset connected to an integrated GPU while SteamVR and games render on the discrete GPU. It targets Linux hybrid-GPU systems such as muxless laptops with HDMI wired to the iGPU. On the tested setup, the bridge presents the finished frame from a shared image with zero explicit frame copies.
+Muxless VR Bridge lets SteamVR and Oasis use a Windows Mixed Reality headset connected to an integrated GPU while SteamVR and games render on the discrete GPU. It targets Linux hybrid-GPU muxless laptops with HDMI wired to the iGPU.
 
 **Current release** · [0.1 for Linux x86-64](https://github.com/vibudh007/muxless-vr-bridge/releases/tag/v0.1)
 
@@ -10,41 +10,37 @@ The AppImage installs both the bridge and the SteamVR shader workaround required
 
 ### 1. Install the bridge
 
-Install **SteamVR** and **Oasis Driver for Windows Mixed Reality** through Steam, then fully quit Steam and SteamVR. Download the AppImage and its matching `.sha256` file from the release page and run these commands in your download directory:
+Install **SteamVR** and **Oasis Driver for Windows Mixed Reality** through Steam, then fully quit Steam and SteamVR. Download the AppImage from the release page and run these commands in your download directory:
 
 ```sh
-image=Muxless-VR-Bridge-0.1-x86_64.AppImage
-sha256sum -c "$image.sha256" &&
-  chmod +x "$image" &&
-  "./$image" --install
+chmod +x Muxless-VR-Bridge-0.1-x86_64.AppImage
+./Muxless-VR-Bridge-0.1-x86_64.AppImage --install
 ```
 
 Installation is per user. The AppImage requires glibc 2.28 or newer and uses the host's Vulkan, DRM, and Wayland support. If AppImage mounting fails, rerun the AppImage command with `APPIMAGE_EXTRACT_AND_RUN=1`.
 
 ### 2. Start Steam on the dGPU
 
-Fully quit Steam, then start it on the discrete GPU. Use either command, or any launcher that starts Steam with `DRI_PRIME=1`:
-
-```sh
-DRI_PRIME=1 steam
-```
+Fully quit Steam, then run:
 
 ```sh
 ~/.local/bin/wmr-gpu-bridge --steam
 ```
 
-Start SteamVR from the library, then launch your game normally. If you manage SteamVR launch options manually, use the quoted absolute path to the installed `wmr-gpu-bridge` launcher followed by `%command%`.
+Start SteamVR, then launch your game normally.
 
 ## Verify and troubleshoot
 
-```sh
-~/.local/bin/wmr-gpu-bridge --doctor
-~/.local/bin/wmr-gpu-bridge --verify
-~/.local/bin/wmr-gpu-bridge --verify --runtime
-~/.local/bin/wmr-gpu-bridge --logs --follow
-```
+Pick the command that matches what you’re trying to check.
 
-`--verify` checks the installation. Run `--verify --runtime` while the headset is awake and SteamVR is presenting. The last three SteamVR sessions are retained under `${XDG_STATE_HOME:-$HOME/.local/state}/wmr-gpu-bridge/runs/`.
+| Command | When to use it | What it checks |
+| --- | --- | --- |
+| `~/.local/bin/wmr-gpu-bridge --doctor` | Installation fails or SteamVR won’t start. | Checks for SteamVR, Oasis, required system libraries, and GPU and display capabilities. |
+| `~/.local/bin/wmr-gpu-bridge --verify` | You’ve just installed or upgraded the bridge. | Checks that the installed files match their recorded checksums and that the Vulkan layer can load. SteamVR can be closed. |
+| `~/.local/bin/wmr-gpu-bridge --verify --runtime` | SteamVR is running and you want to confirm the bridge is sending frames to the headset. | Checks the installation and reports whether the bridge is actively presenting. Keep the headset awake while running it. |
+| `~/.local/bin/wmr-gpu-bridge --logs --follow` | You’re reproducing a freeze, crash, or display problem. | Streams the bridge log as events happen. Press `Ctrl+C` to stop watching. |
+
+The bridge keeps logs from the last three SteamVR sessions in `~/.local/state/wmr-gpu-bridge/runs/` by default.
 
 ## Uninstall
 
@@ -58,18 +54,33 @@ This removes both components. The bridge uses receipts to track installed files.
 
 ## Tested hardware and known limits
 
-The test system uses an AMD Radeon RX 6800M, AMD integrated graphics, a Lenovo Explorer over HDMI, COSMIC Wayland, and Oasis 1.0.4. SteamVR Home and the dashboard rendered correctly in the headset with SteamVR beta 2.19.2. The built-in Desktop view has caused compositor crashes. Other hardware and Linux configurations still need testing.
+The test system is an Asus ROG Strix G15 Advantage Edition (2021), which has an AMD Radeon RX 6800M, AMD Vega 8 integrated graphics internally wired to the HDMI port, a Lenovo Explorer WMR headset over HDMI, COSMIC Desktop Environment, SteamVR Beta 2.19.2 and Oasis 1.0.4. SteamVR Home and the dashboard rendered correctly in the headset with SteamVR beta 2.19.2. Other hardware and Linux configurations still need testing.
 
 ## Build from source
 
-For the native bridge build, install a C++17 compiler, Python 3, pkg-config, libdrm development files, the Vulkan loader and headers, and the Vulkan registry (`vk.xml`). The AppImage build also needs rootless Podman and host Vulkan Video headers. It checks the vendored source hashes and uses a pinned container base and AppImage tool digest.
+Run these commands from the repository root.
+
+### Build the AppImage
+
+Use this if you want an installer you can run with `--install` or share with someone else.
 
 ```sh
-./shim/build.sh
 ./shim/appimage/build.sh
 ```
 
-The native build writes to `shim/build/`. The AppImage and checksum are written to `shim/dist/`. Standalone display and image-sharing probes are in `prototype/`.
+Requires Python 3, rootless Podman, and host Vulkan headers, including Vulkan Video headers and the Vulkan registry (`vk.xml`). The script builds the binaries in a container and writes the AppImage and its checksum to `shim/dist/`.
+
+### Build the native binaries
+
+Use this for local development. The script compiles the Vulkan layer and launcher into `shim/build/`.
+
+```sh
+./shim/build.sh
+```
+
+Requires a C++17 compiler, Python 3, `pkg-config`, libdrm development files, the Vulkan loader and headers, and the Vulkan registry (`vk.xml`).
+
+Both scripts expect the Vulkan registry under `/usr/share/vulkan/registry/`. The AppImage script also expects the host headers under `/usr/include/vulkan/` and `/usr/include/vk_video/`.
 
 ## License
 
