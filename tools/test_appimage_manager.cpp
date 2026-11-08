@@ -15,9 +15,9 @@ int main(){
  char folder[]="/tmp/wmr-manager-unit-XXXXXX";assert(mkdtemp(folder));fs::path root=folder;
  setenv("HOME",folder,1);setenv("XDG_CONFIG_HOME",(root/"config").c_str(),1);setenv("XDG_DATA_HOME",(root/"data").c_str(),1);setenv("XDG_STATE_HOME",(root/"state").c_str(),1);setenv("WMR_BRIDGE_PREFIX",(root/"prefix").c_str(),1);
  json report={{"checks",json::array()}};Discovery missing;
- assert(!optionalOasis(report,missing)&&report["checks"][0]["level"]=="ok");
+ assert(!requireOasis(report,missing)&&report["checks"][0]["level"]=="error");
  Discovery present;present.oasis=root/"Oasis";write(present.oasis/"bin/linux64/driver_oasis.so","fixture");
- assert(optionalOasis(report,present));
+ assert(requireOasis(report,present));
  auto lib=prefix()/"lib/wmr-gpu-bridge/future-999";auto payload=lib/"steam.desktop";auto alias=steamDesktop();
  auto receiptFile=state()/"install-receipt.json";
  auto entry=[&](const fs::path&p){return json{{"path",p.string()},{"sha256",digest(p)}};};
@@ -56,6 +56,6 @@ int main(){
  }
  assert(uninstall()["preserved_modified_files"].empty());
  fs::remove_all(root);
- std::cout<<"PASS: optional Oasis, additive future metadata, partial/dangling install, idempotence, settings preservation, modified files, malformed/out-of-scope/symlink escape receipts, interrupted replacement and actual process guards.\n";
+ std::cout<<"PASS: required Oasis, additive future metadata, partial/dangling install, idempotence, settings preservation, modified files, malformed/out-of-scope/symlink escape receipts, interrupted replacement and actual process guards.\n";
  return 0;
 }

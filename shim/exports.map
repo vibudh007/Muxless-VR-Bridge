@@ -1,4 +1,4 @@
 {
- global: WMR_GetInstanceProcAddr; WMR_GetDeviceProcAddr; vkNegotiateLoaderLayerInterfaceVersion;
+ global: MuxlessVrBridge_GetInstanceProcAddr; MuxlessVrBridge_GetDeviceProcAddr; vkNegotiateLoaderLayerInterfaceVersion;
  local: *;
 };

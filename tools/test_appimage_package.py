@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='wmr-appimage-test-') as tmp:
  report=run('--verify');assert report['runtime']['state']=='unverified'
  run('--verify','--runtime',code=2)
  desktop=root/'data/applications/wmr-gpu-bridge-steam.desktop'
- assert desktop.exists() and '--steam %U' in desktop.read_text()
+ assert not desktop.exists()
  config=root/'config/wmr-gpu-bridge/settings.conf';cli=root/'prefix/bin/wmr-gpu-bridge'
  config.write_text(config.read_text()+'unlit_missing_ubo=0\nperformance_logging=1\ncustom_option=retained\n')
  subprocess.run([str(cli),'--disable'],env=env,check=True,capture_output=True)

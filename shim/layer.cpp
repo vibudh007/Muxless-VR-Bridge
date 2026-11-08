@@ -28,7 +28,7 @@ static std::mutex mapsMutex,logMutex;
 static FILE*logFile=nullptr;
 static void log(const char*fmt,...){ WMR_TIMING_SCOPE("log");
  std::lock_guard<std::mutex>lock(logMutex);
- if(!logFile){logFile=bridgeOpenRunLog();if(!logFile)logFile=stderr;setvbuf(logFile,nullptr,_IOLBF,0);std::fprintf(logFile,"%s pid=%d WMR_GPU_BRIDGE version=%s session=%s\n",bridgeUtc().c_str(),getpid(),WMR_BRIDGE_VERSION,bridgeRunDirectory.filename().c_str());bridgeHealth("starting");}
+ if(!logFile){logFile=bridgeOpenRunLog();if(!logFile)logFile=stderr;setvbuf(logFile,nullptr,_IOLBF,0);std::fprintf(logFile,"%s pid=%d MUXLESS_VR_BRIDGE version=%s session=%s\n",bridgeUtc().c_str(),getpid(),MUXLESS_VR_BRIDGE_VERSION,bridgeRunDirectory.filename().c_str());bridgeHealth("starting");}
  if(logFile!=stderr&&ftell(logFile)>4*1024*1024){
   fclose(logFile);std::error_code ec;auto previous=bridgeLogPath;previous+=".previous";std::filesystem::remove(previous,ec);std::filesystem::rename(bridgeLogPath,previous,ec);logFile=fopen(bridgeLogPath.c_str(),"a");if(!logFile)logFile=stderr;setvbuf(logFile,nullptr,_IOLBF,0);
  }
@@ -84,22 +84,22 @@ static void check(VkResult r,const char*where){if(r!=VK_SUCCESS)throw std::runti
 #include "../common/vulkan_helpers.hpp"
 #include "bridge.hpp"
 #include "trace-generated.h"
-extern "C" PFN_vkVoidFunction VKAPI_CALL WMR_GetDeviceProcAddr(VkDevice,const char*);
-extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL WMR_GetInstanceProcAddr(VkInstance i,const char*n){
+extern "C" PFN_vkVoidFunction VKAPI_CALL MuxlessVrBridge_GetDeviceProcAddr(VkDevice,const char*);
+extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL MuxlessVrBridge_GetInstanceProcAddr(VkInstance i,const char*n){
  if(!strcmp(n,"vkCreateInstance"))return (PFN_vkVoidFunction)createInstance;
  if(!strcmp(n,"vkDestroyInstance"))return (PFN_vkVoidFunction)destroyInstance;
  if(!strcmp(n,"vkCreateDevice"))return (PFN_vkVoidFunction)createDevice;
  if(!strcmp(n,"vkDestroyDevice"))return (PFN_vkVoidFunction)destroyDevice;
- if(!strcmp(n,"vkGetInstanceProcAddr"))return (PFN_vkVoidFunction)WMR_GetInstanceProcAddr;
- auto s=istate(i);if(s&&s->shaderCompat){if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)WMR_GetDeviceProcAddr;auto hook=steamVrShader::hook(n);if(hook)return hook;}
+ if(!strcmp(n,"vkGetInstanceProcAddr"))return (PFN_vkVoidFunction)MuxlessVrBridge_GetInstanceProcAddr;
+ auto s=istate(i);if(s&&s->shaderCompat){if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)MuxlessVrBridge_GetDeviceProcAddr;auto hook=steamVrShader::hook(n);if(hook)return hook;}
  if(s&&s->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
  return s?s->gipa(i,n):nullptr;
 }
-extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL WMR_GetDeviceProcAddr(VkDevice d,const char*n){
+extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL MuxlessVrBridge_GetDeviceProcAddr(VkDevice d,const char*n){
  if(!strcmp(n,"vkDestroyDevice"))return (PFN_vkVoidFunction)destroyDevice;
- if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)WMR_GetDeviceProcAddr;
+ if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)MuxlessVrBridge_GetDeviceProcAddr;
  auto s=dstate(d);if(s&&s->instance->shaderCompat){auto hook=steamVrShader::hook(n);if(hook)return hook;}
  if(s&&s->instance->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
  return s?s->gdpa(d,n):nullptr;
 }
-extern "C" __attribute__((visibility("default"))) VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface*v){if(v->loaderLayerInterfaceVersion>2)v->loaderLayerInterfaceVersion=2;v->pfnGetInstanceProcAddr=WMR_GetInstanceProcAddr;v->pfnGetDeviceProcAddr=WMR_GetDeviceProcAddr;v->pfnGetPhysicalDeviceProcAddr=nullptr;return VK_SUCCESS;}
+extern "C" __attribute__((visibility("default"))) VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface*v){if(v->loaderLayerInterfaceVersion>2)v->loaderLayerInterfaceVersion=2;v->pfnGetInstanceProcAddr=MuxlessVrBridge_GetInstanceProcAddr;v->pfnGetDeviceProcAddr=MuxlessVrBridge_GetDeviceProcAddr;v->pfnGetPhysicalDeviceProcAddr=nullptr;return VK_SUCCESS;}

@@ -1,2 +1,2 @@
 #pragma once
-#define WMR_BRIDGE_VERSION "0.15.0-alpha"
+#define MUXLESS_VR_BRIDGE_VERSION "0.1"

@@ -22,14 +22,14 @@ static void enable(bool value){
 }
 int main(int argc,char**argv){try{
  if(argc<2||!strcmp(argv[1],"--help")){
-  std::puts("WMR GPU Bridge " WMR_BRIDGE_VERSION "\nUsage: wmr-gpu-bridge COMMAND [ARG...]\nSteamVR launch option: /home/USER/.local/bin/wmr-gpu-bridge %command%\nStart the entire Steam/VR stack: wmr-gpu-bridge --steam [Steam arguments]\nOptions: --enable, --disable, --status, --gpu-status, --version\nActivation is per-user and persists until --disable. Only Vulkan clients requesting DRM display acquisition are eligible.");return argc<2?2:0;
+  std::puts("Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nUsage: wmr-gpu-bridge COMMAND [ARG...]\nSteamVR launch option: /home/USER/.local/bin/wmr-gpu-bridge %command%\nStart the entire Steam/VR stack: wmr-gpu-bridge --steam [Steam arguments]\nOptions: --enable, --disable, --status, --gpu-status, --version\nActivation is per-user and persists until --disable. Only Vulkan clients requesting DRM display acquisition are eligible.");return argc<2?2:0;
  }
  if(!strcmp(argv[1],"--doctor")||!strcmp(argv[1],"--verify")||!strcmp(argv[1],"--logs")||!strcmp(argv[1],"--uninstall")){
   char exe[4096];ssize_t n=readlink("/proc/self/exe",exe,sizeof(exe)-1);if(n<0)throw std::runtime_error("Cannot locate launcher");exe[n]=0;
-  auto manager=std::filesystem::path(exe).parent_path().parent_path()/"lib/wmr-gpu-bridge"/WMR_BRIDGE_VERSION/"wmr-gpu-bridge-manager";
+  auto manager=std::filesystem::path(exe).parent_path().parent_path()/"lib/wmr-gpu-bridge"/MUXLESS_VR_BRIDGE_VERSION/"muxless-vr-bridge-manager";
   std::string path=manager.string();argv[0]=const_cast<char*>(path.c_str());execv(path.c_str(),argv);throw std::runtime_error("Manager is not installed; use the AppImage");
  }
- if(!strcmp(argv[1],"--version")){std::puts(WMR_BRIDGE_VERSION);return 0;}
+ if(!strcmp(argv[1],"--version")){std::puts(MUXLESS_VR_BRIDGE_VERSION);return 0;}
  if(!strcmp(argv[1],"--enable")||!strcmp(argv[1],"--disable")){bool value=!strcmp(argv[1],"--enable");enable(value);std::puts(value?"Enabled for future compatible Vulkan clients.":"Disabled for future compatible Vulkan clients.");return 0;}
  if(!strcmp(argv[1],"--status")){auto path=configDirectory()/"settings.conf";std::ifstream file(path);std::printf("Configuration: %s\n",path.c_str());if(file)std::fputs(std::string(std::istreambuf_iterator<char>(file),{}).c_str(),stdout);else std::puts("disabled (no configuration)");return 0;}
  if(!strcmp(argv[1],"--gpu-status")){bool ok=true;for(const auto&p:gpuLaunch::steamProcesses()){std::printf("Steam PID=%s DRI_PRIME=1=%s\n",p.pid.c_str(),p.dgpu?"yes":"NO/UNKNOWN");ok&=p.dgpu;}return ok?0:1;}

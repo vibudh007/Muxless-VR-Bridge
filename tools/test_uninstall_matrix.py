@@ -46,7 +46,10 @@ def main():
             subprocess.run([str(image), '--appimage-extract'], cwd=folder,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, timeout=90)
             appdir = folder / 'squashfs-root'
-            managers[image.name] = appdir / 'usr/bin/wmr-gpu-bridge-manager'
+            manager = appdir / 'usr/bin/muxless-vr-bridge-manager'
+            if not manager.is_file():
+                manager = appdir / 'usr/bin/wmr-gpu-bridge-manager'
+            managers[image.name] = manager
             report['images'].append({'name': image.name, 'sha256': hashlib.sha256(image.read_bytes()).hexdigest()})
         candidate_name = candidate.name
         for installed_name, installer in managers.items():
@@ -72,10 +75,6 @@ def main():
             profile = steam / 'userdata/1/config/localconfig.vdf'
             profile.parent.mkdir(parents=True)
             profile.write_text('"apps" { "250820" { "LaunchOptions" "QT_QPA_PLATFORM=xcb %command% -vr" } }')
-            if installed_name == candidate_name:
-                # Exercise the generic install path with neither runtime nor driver.
-                env["WMR_STEAMVR_PATH"] = str(work / "missing-runtime")
-                shutil.rmtree(oasis)
             code, body, error = invoke(installer, env, '--install')
             if code:
                 raise AssertionError(('installation failed', installed_name, code, body, error))
@@ -86,12 +85,19 @@ def main():
                 assert code == 0, (doctor, error)
                 checks = {c['name']: c for c in doctor['checks']}
                 assert checks['Oasis']['level'] == 'ok'
-                assert checks['SteamVR']['level'] == 'warn'
+                assert checks['SteamVR']['level'] == 'ok'
                 assert 'WMR device checks' not in checks
                 assert 'udev rules' not in checks and 'libusb-1.0.so.0' not in checks
                 assert receipt['schema'] == 1 and receipt['removal_protocol'] == 1
-                assert receipt['files'][0]['kind'] == 'desktop-symlink'
-                report['edge_cases'].append('actual candidate install/verify without SteamVR or Oasis; headset-specific checks absent')
+                assert all(f.get('kind') != 'desktop-symlink' for f in receipt['files'])
+                missing_env = {**env, 'WMR_STEAMVR_PATH': '', 'WMR_OASIS_PATH': ''}
+                code, doctor, error = invoke(installer, missing_env, '--doctor')
+                assert code == 1, (doctor, error)
+                checks = {c['name']: c['level'] for c in doctor['checks']}
+                assert checks['Oasis'] == checks['SteamVR'] == 'error'
+                code, _, _ = invoke(installer, missing_env, '--install')
+                assert code == 1 and json.loads(receipt_file.read_text()) == receipt
+                report['edge_cases'].append('candidate requires SteamVR and Oasis and installs no Steam desktop shortcut')
             backup = temp / 'backup'
             if backup.exists():
                 shutil.rmtree(backup)
@@ -137,11 +143,11 @@ def main():
                 assert not result['preserved_modified_files']
                 assert require_ok(current, current_env, '--uninstall')['already_uninstalled']
                 report['edge_cases'].append('future additive metadata, recorded custom prefix, repeated uninstall')
-                for marker in ('0.3.0-alpha-', '0.7.2-pool-diag-'):
-                    old = next(manager for name, manager in managers.items() if marker in name)
+                for marker, old in managers.items():
+                    if marker == candidate_name:
+                        continue
                     for direction in ('upgrade', 'downgrade'):
                         restore()
-                        # Legacy installation needs its optional WMR fixture.
                         path = oasis / 'bin/linux64/driver_oasis.so'
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text('fixture: discovery only')
@@ -161,7 +167,7 @@ def main():
                 restore()
                 require_ok(current, current_env, '--uninstall')
                 version = receipt['version']
-                collision = work / 'prefix/lib/wmr-gpu-bridge' / version / 'wmr-gpu-bridge-manager'
+                collision = work / 'prefix/lib/wmr-gpu-bridge' / version / 'muxless-vr-bridge-manager'
                 collision.mkdir(parents=True)
                 (collision / 'unrelated').write_text('preserve me')
                 code, body, error = invoke(current, current_env, '--install')

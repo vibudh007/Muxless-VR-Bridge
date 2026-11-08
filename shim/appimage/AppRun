@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 appdir="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
-exec "$appdir/usr/bin/wmr-gpu-bridge-manager" "$@"
+exec "$appdir/usr/bin/muxless-vr-bridge-manager" "$@"

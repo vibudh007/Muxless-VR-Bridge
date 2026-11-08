@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise v14 adapter migration and both generations of AppImage remover."""
+"""Exercise legacy adapter migration and both generations of AppImage remover."""
 import json
 import os
 from pathlib import Path
@@ -19,6 +19,14 @@ with tempfile.TemporaryDirectory(prefix="wmr-shader-upgrade-") as tmp:
         "WMR_OASIS_PATH": "", "APPIMAGE_EXTRACT_AND_RUN": "1",
     }
 
+    for key, filename in (("WMR_STEAMVR_PATH", "vrcompositor"),
+                          ("WMR_OASIS_PATH", "driver_oasis.so")):
+        install = home / filename
+        fixture = install / "bin/linux64" / filename
+        fixture.parent.mkdir(parents=True)
+        fixture.touch()
+        env[key] = str(install)
+
     def run(image, *args, expected=0):
         result = subprocess.run([str(image), *args, "--json"], env=env,
                                 capture_output=True, text=True, timeout=90)
@@ -34,6 +42,9 @@ with tempfile.TemporaryDirectory(prefix="wmr-shader-upgrade-") as tmp:
     run(old, "--install", "--no-steam-config")
     subprocess.run(["python3", str(adapter), "install"], env=env, check=True)
     original = legacy.read_bytes()
+    original_bridge = bridge.read_bytes()
+    shortcut = home / ".local/share/applications/wmr-gpu-bridge-steam.desktop"
+    assert shortcut.is_symlink()
     isolated = home / "other"
     normal_env = env.copy()
     env.update(XDG_DATA_HOME=str(isolated / "data"),
@@ -48,12 +59,13 @@ with tempfile.TemporaryDirectory(prefix="wmr-shader-upgrade-") as tmp:
     legacy.write_bytes(original + b"\n")
     run(new, "--install", "--no-steam-config", expected=1)
     assert legacy.read_bytes() == original + b"\n"
-    assert "0.14.0" in bridge.read_text()
+    assert bridge.read_bytes() == original_bridge
     legacy.write_bytes(original)
     run(new, "--install", "--no-steam-config")
     assert list(registration.glob("*.json")) == [bridge]
     assert not library.exists() and not receipt.exists()
-    assert "0.15.0" in bridge.read_text()
+    assert bridge.read_bytes() != original_bridge
+    assert not os.path.lexists(shortcut)
     run(new, "--verify")
     assert not run(old, "--uninstall")["preserved_modified_files"]
     assert not bridge.exists()
@@ -62,4 +74,4 @@ with tempfile.TemporaryDirectory(prefix="wmr-shader-upgrade-") as tmp:
     assert not run(new, "--uninstall")["preserved_modified_files"]
     assert not bridge.exists()
 
-print("PASS: v14 migration, modified-file protection, and both cross-version removal directions.")
+print("PASS: legacy adapter migration, modified-file protection, and both cross-version removal directions.")
