@@ -4,7 +4,7 @@ A Linux Vulkan layer for SteamVR on hybrid-GPU systems where the headset's displ
 
 ## Alpha status
 
-The current release candidate is **0.14.0-portability-alpha**. The tested configuration is an AMD Radeon RX 6800M, AMD integrated graphics, Lenovo Explorer over HDMI, COSMIC Wayland, SteamVR beta 2.19.1, and Oasis 1.0.4. The tested local configuration used an external SteamVR shader workaround. The bridge alone reproduced a SteamVR compositor fault during Home startup on that configuration.
+The current release candidate is **0.14.0-portability-alpha**. The tested configuration is an AMD Radeon RX 6800M, AMD integrated graphics, Lenovo Explorer over HDMI, COSMIC Wayland, SteamVR beta 2.19.1 and 2.19.2, and Oasis 1.0.4. The [SteamVR shader workaround](compat/steamvr/README.md) is required on this tested setup. With it disabled, the compositor stalled just after the first frame. With it enabled, Home and the dashboard stayed running. Initial stutter subsided after a few seconds.
 
 Other GPU combinations, compositors, distros, and headsets require validation. Monado support is deferred. SteamVR's built-in Desktop view and some dashboard interactions have caused compositor crashes on the tested setup. Stable 90 Hz under load and the target of at most 0.1 ms of added latency against a directly connected dGPU remain unverified.
 
@@ -17,6 +17,8 @@ sha256sum -c WMR-GPU-Bridge-0.14.0-portability-alpha-x86_64.AppImage.sha256
 chmod +x WMR-GPU-Bridge-0.14.0-portability-alpha-x86_64.AppImage
 ./WMR-GPU-Bridge-0.14.0-portability-alpha-x86_64.AppImage --install
 ```
+
+The AppImage installs the bridge. On the tested setup, also [build and install the SteamVR shader workaround](compat/steamvr/README.md) before launching SteamVR. The two components are installed separately.
 
 The installer uses per-user paths. The build targets glibc 2.28 or newer and uses host Vulkan, DRM, and Wayland support. SteamVR and any headset driver, including Oasis for the tested WMR setup, are installed separately. If AppImage mounting is unavailable, prefix the command with `APPIMAGE_EXTRACT_AND_RUN=1`.
 

@@ -9,3 +9,4 @@ __pycache__/
 /prototype/build/
 /prototype/results/
 *.ppm
+/compat/steamvr/build/
