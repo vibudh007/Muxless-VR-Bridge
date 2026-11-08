@@ -6,7 +6,7 @@ The adapter selects vrcompositor and recognizes the exact shader fingerprint. Th
 
 This workaround is required on the tested RX 6800M / Lenovo Explorer setup with SteamVR beta 2.19.2. Other configurations may work without it.
 
-For the prebuilt Linux x86-64 package, follow the [release installation instructions](../../README.md#2-install-the-steamvr-shader-workaround). The archive contains the compiled library and its Python 3 installer.
+Starting with v15, the [AppImage](../../README.md#install-and-play) installs the workaround inside the bridge’s Vulkan layer. The integrated hook honors `DISABLE_WMR_STEAMVR_COMPAT=1` for diagnosis. The standalone instructions below are for v14.
 
 To build and install from source for the current user, stop SteamVR and run:
 
@@ -15,6 +15,6 @@ bash compat/steamvr/build.sh
 python3 compat/steamvr/setup.py install
 ```
 
-The build uses the same glibc 2.28 container baseline as the generic AppImage. The separate registration is disabled with `DISABLE_WMR_STEAMVR_COMPAT=1`. To remove it, close SteamVR and run `python3 compat/steamvr/setup.py uninstall`. The setup command only removes its receipt-owned files. Use this adapter with the generic bridge version 0.14.0 or newer. Older versions already contain the compatibility hook.
+The build uses the same glibc 2.28 container baseline as the generic AppImage. The separate registration is disabled with `DISABLE_WMR_STEAMVR_COMPAT=1`. To remove it, close SteamVR and run `python3 compat/steamvr/setup.py uninstall`. The setup command only removes its receipt-owned files. Use the standalone adapter with bridge v14. Earlier releases and v15 already contain the compatibility hook.
 
 Remove the adapter when the SteamVR or driver fix has been verified on this setup.

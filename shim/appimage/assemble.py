@@ -11,6 +11,7 @@ for name in ['AppRun','wmr-gpu-bridge.desktop','wmr-gpu-bridge.svg']:shutil.copy
 icon=app/'.DirIcon'
 if not icon.exists():icon.symlink_to('wmr-gpu-bridge.svg')
 licenses=app/'usr/share/licenses';licenses.mkdir(parents=True,exist_ok=True)
+shutil.copy2(root/"LICENSE",licenses/"WMR-GPU-Bridge.GPL-3.0-or-later")
 shutil.copy2(root/'shim/third_party/nlohmann/LICENSE.MIT',licenses/'nlohmann-json.MIT')
 shutil.copy2(root/'shim/third_party/picosha2/LICENSE',licenses/'PicoSHA2.MIT')
 for p in (root/'shim/build-portable/licenses').glob('COPYING*'):shutil.copy2(p,licenses/p.name)

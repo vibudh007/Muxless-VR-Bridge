@@ -101,7 +101,29 @@ static json configureSteam(){json changes=json::array();if(managerSkipSteamConfi
 static bool hasOwnedLaunchOption(const fs::path&launcher){for(auto file:steamConfigurations())if(launchSlot(read(file)).value.find(launcher.string())!=std::string::npos)return true;return false;}
 struct ManagerLock {int fd;ManagerLock(){fs::create_directories(state());fd=open((state()/"manager.lock").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||flock(fd,LOCK_EX))throw std::runtime_error("Cannot lock installation state");}~ManagerLock(){flock(fd,LOCK_UN);close(fd);}};
 static fs::path steamDesktop(){return xdg("XDG_DATA_HOME",prefix()/"share")/"applications/wmr-gpu-bridge-steam.desktop";}
+// The standalone v14 adapter has its own receipt. Migrate only its exact,
+ // receipt-owned files and keep the bridge's removal protocol unchanged.
+static std::vector<fs::path> legacyShaderFiles(){
+ auto dir=home()/".local/lib/wmr-steamvr-compat";
+ auto receipt=dir/"receipt.json";
+ auto manifest=xdg("XDG_DATA_HOME",home()/".local/share")/"vulkan/implicit_layer.d/wmr_steamvr_shader_compat.json";
+ auto library=dir/"libwmr-steamvr-compat.so";
+ auto present=[](const fs::path& path){return fs::symlink_status(path).type()!=fs::file_type::not_found;};
+ if(!present(manifest))return {};
+ auto reject=[](){throw std::runtime_error("Standalone shader adapter files are untracked or modified; resolve them before installing");};
+ if(!under(dir,home()/".local/lib")||fs::is_symlink(fs::symlink_status(dir))||!fs::is_regular_file(fs::symlink_status(receipt)))reject();
+ auto owned=readJson(receipt);
+ if(!owned.is_object()||!owned.contains("manifest")||!owned.contains("library"))reject();
+ for(const auto& item:{std::make_pair(manifest,"manifest"),std::make_pair(library,"library")}){
+  if(!present(item.first))continue;
+  if(!fs::is_regular_file(fs::symlink_status(item.first)))reject();
+  auto hash=digest(item.first);
+  if(hash!=owned.value(item.second,"")&&hash!=owned.value(std::string("previous_")+item.second,""))reject();
+ }
+ return {library,manifest,receipt};
+}
 static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();for(const auto&c:preflight["checks"])if(c["level"]=="error")throw std::runtime_error("Preflight: "+c["name"].get<std::string>()+": "+c["detail"].get<std::string>()+"; run --doctor for the full report");if(!processes("vrcompositor").empty()||!processes("vrserver").empty())throw std::runtime_error("Close SteamVR before installing/upgrading");
+ legacyShaderFiles();
  auto root=appDir(),libdir=prefix()/"lib/wmr-gpu-bridge"/WMR_BRIDGE_VERSION;json receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files"))receipt["files"]=json::array();std::map<std::string,json>files;for(auto&f:receipt["files"])files[f["path"].get<std::string>()]=f;
  auto existing=readJson(manifestPath());if(fs::exists(manifestPath())&&!existing.contains("layer"))throw std::runtime_error("Existing manifest is malformed or unrecognized; refusing overwrite");if(existing.contains("layer")){if(existing["layer"].value("name","")!="VK_LAYER_WMR_gpu_bridge")throw std::runtime_error("Manifest is owned by another layer");fs::path previous=existing["layer"].value("library_path","");if(!under(previous,prefix()/"lib/wmr-gpu-bridge"))throw std::runtime_error("Existing layer points outside the managed prefix; save/resolve that installation first");if(fs::is_regular_file(previous))files[previous.string()]={{"path",previous.string()},{"sha256",digest(previous)}};write(state()/"manifest-before-appimage-install.json",existing.dump(2)+"\n");}
  auto desktop=steamDesktop();if(fs::exists(desktop)){auto old=files.find(desktop.string());if(old==files.end()||digest(desktop)!=old->second["sha256"].get<std::string>())throw std::runtime_error("Steam dGPU shortcut exists and is untracked/modified; refusing overwrite");}
@@ -135,7 +157,9 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
  auto launchChanges=configureSteam();for(auto&f:files){f.second.erase("previous_sha256");f.second.erase("previous_target");}receipt={{"launch_options",launchChanges},{"schema",1},{"version",WMR_BRIDGE_VERSION},{"prefix",prefix().string()},{"manifest",manifestPath().string()},{"files",json::array()}};// Compatibility ABI: unlink desktop alias before removing its payload.
  receipt["removal_protocol"]=1;receipt["files"].push_back(files.at(desktop.string()));
  for(auto&f:files)if(f.first!=desktop.string())receipt["files"].push_back(f.second);
- write(state()/"install-receipt.json",receipt.dump(2)+"\n");return {{"installed",true},{"version",WMR_BRIDGE_VERSION},{"launch_option","\""+(prefix()/"bin/wmr-gpu-bridge").string()+"\" %command%"},{"note",processes("steam").empty()?"per-user activation installed; available SteamVR launch options configured without changing vendor files":"per-user activation installed; Steam is running so launch options were not edited; use the printed option"}};
+ write(state()/"install-receipt.json",receipt.dump(2)+"\n");
+ for(const auto& path:legacyShaderFiles())fs::remove(path);
+ return {{"installed",true},{"version",WMR_BRIDGE_VERSION},{"launch_option","\""+(prefix()/"bin/wmr-gpu-bridge").string()+"\" %command%"},{"note",processes("steam").empty()?"per-user activation installed; available SteamVR launch options configured without changing vendor files":"per-user activation installed; Steam is running so launch options were not edited; use the printed option"}};
 }
 static json verify(){json report={{"checks",json::array()},{"runtime",runtimeStatus()}};auto receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files")){check(report,"installation receipt","error","missing; install using AppImage");return report;}for(auto&f:receipt["files"]){fs::path path=f["path"].get<std::string>();bool ok=fs::is_regular_file(path)&&digest(path)==f["sha256"].get<std::string>();check(report,path.string(),ok?"ok":"error",ok?"checksum matches":"missing or changed");}auto manifest=readJson(manifestPath());if(manifest.contains("layer")){auto library=manifest["layer"].value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,"layer loading",ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}return report;}
 // Removal protocol 1: schema-1 receipts remain readable by legacy AppImages.

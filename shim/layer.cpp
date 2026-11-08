@@ -35,7 +35,7 @@ static void log(const char*fmt,...){ WMR_TIMING_SCOPE("log");
  std::fprintf(logFile,"%s pid=%d ",bridgeUtc().c_str(),getpid());va_list args;va_start(args,fmt);vfprintf(logFile,fmt,args);va_end(args);fputc('\n',logFile);
 }
 static void*key(const void*h){return h?*reinterpret_cast<void*const*>(h):nullptr;}
-struct Instance{VkInstance handle;PFN_vkGetInstanceProcAddr gipa;bool active;};
+struct Instance{VkInstance handle;PFN_vkGetInstanceProcAddr gipa;bool active;bool shaderCompat;};
 struct Device{
  PFN_vkCmdPipelineBarrier pipelineBarrier=nullptr;PFN_vkWaitForFences waitFences=nullptr;PFN_vkResetFences resetFences=nullptr;PFN_vkGetFenceStatus fenceStatus=nullptr;PFN_vkQueueSubmit queueSubmit=nullptr;PFN_vkQueueSubmit2 queueSubmit2=nullptr;
  bool modifierImages=false,externalTransfer=false;VkDevice handle;VkPhysicalDevice physical;PFN_vkGetDeviceProcAddr gdpa;std::shared_ptr<Instance>instance;std::mutex queueFamiliesMutex;std::unordered_map<VkQueue,uint32_t>queueFamilies;};
@@ -43,8 +43,9 @@ static std::unordered_map<void*,std::shared_ptr<Instance>>instances;
 static std::unordered_map<void*,std::shared_ptr<Device>>devices;
 static std::shared_ptr<Instance>istate(const void*h){ WMR_TIMING_SCOPE("istate");std::lock_guard<std::mutex>lock(mapsMutex);auto it=instances.find(key(h));return it==instances.end()?nullptr:it->second;}
 static std::shared_ptr<Device>dstate(const void*h){ WMR_TIMING_SCOPE("dstate");std::lock_guard<std::mutex>lock(mapsMutex);auto it=devices.find(key(h));return it==devices.end()?nullptr:it->second;}
+#include "../compat/steamvr/hooks.hpp"
 static void gpu(const std::shared_ptr<Instance>&s,VkPhysicalDevice p){ WMR_TIMING_SCOPE("gpu");auto f=reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(s->gipa(s->handle,"vkGetPhysicalDeviceProperties2"));VkPhysicalDeviceDrmPropertiesEXT drm{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};id.pNext=&drm;VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};props.pNext=&id;f(p,&props);log("GPU handle=%p name=%s primary=%lld:%lld render=%lld:%lld uuid=%02x%02x%02x%02x%02x%02x%02x%02x",(void*)p,props.properties.deviceName,(long long)drm.primaryMajor,(long long)drm.primaryMinor,(long long)drm.renderMajor,(long long)drm.renderMinor,id.deviceUUID[0],id.deviceUUID[1],id.deviceUUID[2],id.deviceUUID[3],id.deviceUUID[4],id.deviceUUID[5],id.deviceUUID[6],id.deviceUUID[7]);}
-static VKAPI_ATTR VkResult VKAPI_CALL createInstance(const VkInstanceCreateInfo*ci,const VkAllocationCallbacks*a,VkInstance*out){ WMR_TIMING_SCOPE("createInstance");auto*link=(VkLayerInstanceCreateInfo*)ci->pNext;while(link&&(link->sType!=VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO||link->function!=VK_LAYER_LINK_INFO))link=(VkLayerInstanceCreateInfo*)link->pNext;if(!link)return VK_ERROR_INITIALIZATION_FAILED;auto gipa=link->u.pLayerInfo->pfnNextGetInstanceProcAddr;link->u.pLayerInfo=link->u.pLayerInfo->pNext;auto f=(PFN_vkCreateInstance)gipa(nullptr,"vkCreateInstance");const bool active=bridgeEligibleInstance(*ci);if(active)bridgeConfigureProcess();VkResult r=f(ci,a,out);if(r==VK_SUCCESS){auto s=std::make_shared<Instance>();s->handle=*out;s->gipa=gipa;s->active=active;{std::lock_guard<std::mutex>lock(mapsMutex);instances[key(*out)]=s;}if(s->active){log("LAYER trace active pid=%d DRI_PRIME=%s instance=%p app=%s",getpid(),getenv("DRI_PRIME"), (void*)*out,ci->pApplicationInfo&&ci->pApplicationInfo->pApplicationName?ci->pApplicationInfo->pApplicationName:"");if(bridgeConfigBool("function_timing")){static std::once_flag timingOnce;std::call_once(timingOnce,[]{bridgeTiming::start(bridgeRunDirectory,bridgeConfigBool("function_timing_pacing_only"));});}for(uint32_t i=0;i<ci->enabledExtensionCount;i++)log("INSTANCE_EXT %s",ci->ppEnabledExtensionNames[i]);uint32_t n=0;auto en=(PFN_vkEnumeratePhysicalDevices)gipa(*out,"vkEnumeratePhysicalDevices");en(*out,&n,nullptr);std::vector<VkPhysicalDevice>ps(n);en(*out,&n,ps.data());for(auto p:ps)gpu(s,p);}}return r;}
+static VKAPI_ATTR VkResult VKAPI_CALL createInstance(const VkInstanceCreateInfo*ci,const VkAllocationCallbacks*a,VkInstance*out){ WMR_TIMING_SCOPE("createInstance");auto*link=(VkLayerInstanceCreateInfo*)ci->pNext;while(link&&(link->sType!=VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO||link->function!=VK_LAYER_LINK_INFO))link=(VkLayerInstanceCreateInfo*)link->pNext;if(!link)return VK_ERROR_INITIALIZATION_FAILED;auto gipa=link->u.pLayerInfo->pfnNextGetInstanceProcAddr;link->u.pLayerInfo=link->u.pLayerInfo->pNext;auto f=(PFN_vkCreateInstance)gipa(nullptr,"vkCreateInstance");const bool active=bridgeEligibleInstance(*ci);if(active)bridgeConfigureProcess();VkResult r=f(ci,a,out);if(r==VK_SUCCESS){auto s=std::make_shared<Instance>();s->handle=*out;s->gipa=gipa;s->active=active;s->shaderCompat=steamVrShaderEnabled();{std::lock_guard<std::mutex>lock(mapsMutex);instances[key(*out)]=s;}if(s->active){log("LAYER trace active pid=%d DRI_PRIME=%s instance=%p app=%s",getpid(),getenv("DRI_PRIME"), (void*)*out,ci->pApplicationInfo&&ci->pApplicationInfo->pApplicationName?ci->pApplicationInfo->pApplicationName:"");if(bridgeConfigBool("function_timing")){static std::once_flag timingOnce;std::call_once(timingOnce,[]{bridgeTiming::start(bridgeRunDirectory,bridgeConfigBool("function_timing_pacing_only"));});}for(uint32_t i=0;i<ci->enabledExtensionCount;i++)log("INSTANCE_EXT %s",ci->ppEnabledExtensionNames[i]);uint32_t n=0;auto en=(PFN_vkEnumeratePhysicalDevices)gipa(*out,"vkEnumeratePhysicalDevices");en(*out,&n,nullptr);std::vector<VkPhysicalDevice>ps(n);en(*out,&n,ps.data());for(auto p:ps)gpu(s,p);}}return r;}
 static VKAPI_ATTR void VKAPI_CALL destroyInstance(VkInstance i,const VkAllocationCallbacks*a){ WMR_TIMING_SCOPE("destroyInstance");auto s=istate(i);if(!s)return;if(s->active)bridgeHealth("stopped");auto f=(PFN_vkDestroyInstance)s->gipa(i,"vkDestroyInstance");{std::lock_guard<std::mutex>lock(mapsMutex);instances.erase(key(i));}f(i,a);}
 static bool enabled();
 static void bridgeDeviceCleanup(VkDevice);
@@ -77,25 +78,28 @@ if(s->active&&enabled()){
 }
 VkResult r=f(p,&local,a,out);if(r==VK_SUCCESS){auto d=std::make_shared<Device>();d->modifierImages=modifierEnabled;d->externalTransfer=externalTransfer;d->handle=*out;d->physical=p;d->gdpa=gdpa;d->instance=s;
  d->pipelineBarrier=(PFN_vkCmdPipelineBarrier)gdpa(*out,"vkCmdPipelineBarrier");d->waitFences=(PFN_vkWaitForFences)gdpa(*out,"vkWaitForFences");d->resetFences=(PFN_vkResetFences)gdpa(*out,"vkResetFences");d->fenceStatus=(PFN_vkGetFenceStatus)gdpa(*out,"vkGetFenceStatus");d->queueSubmit=(PFN_vkQueueSubmit)gdpa(*out,"vkQueueSubmit");d->queueSubmit2=(PFN_vkQueueSubmit2)gdpa(*out,"vkQueueSubmit2");std::lock_guard<std::mutex>lock(mapsMutex);devices[key(*out)]=d;}if(s->active)log("CREATE_DEVICE result=%d",r);return r;}
-static VKAPI_ATTR void VKAPI_CALL destroyDevice(VkDevice d,const VkAllocationCallbacks*a){ WMR_TIMING_SCOPE("destroyDevice");auto s=dstate(d);if(!s)return;descriptorDeviceCleanup(d);bridgeDeviceCleanup(d);auto f=(PFN_vkDestroyDevice)s->gdpa(d,"vkDestroyDevice");{std::lock_guard<std::mutex>lock(mapsMutex);devices.erase(key(d));}f(d,a);}
+static VKAPI_ATTR void VKAPI_CALL destroyDevice(VkDevice d,const VkAllocationCallbacks*a){ WMR_TIMING_SCOPE("destroyDevice");auto s=dstate(d);if(!s)return;if(s->instance->shaderCompat)steamVrShader::diagnosticDeviceCleanup(d);descriptorDeviceCleanup(d);bridgeDeviceCleanup(d);auto f=(PFN_vkDestroyDevice)s->gdpa(d,"vkDestroyDevice");{std::lock_guard<std::mutex>lock(mapsMutex);devices.erase(key(d));}f(d,a);}
 static void check(VkResult r,const char*where){if(r!=VK_SUCCESS)throw std::runtime_error(std::string(where)+" result="+std::to_string(r));}
 #define VK(call) check((call),#call)
 #include "../common/vulkan_helpers.hpp"
 #include "bridge.hpp"
 #include "trace-generated.h"
+extern "C" PFN_vkVoidFunction VKAPI_CALL WMR_GetDeviceProcAddr(VkDevice,const char*);
 extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL WMR_GetInstanceProcAddr(VkInstance i,const char*n){
  if(!strcmp(n,"vkCreateInstance"))return (PFN_vkVoidFunction)createInstance;
  if(!strcmp(n,"vkDestroyInstance"))return (PFN_vkVoidFunction)destroyInstance;
  if(!strcmp(n,"vkCreateDevice"))return (PFN_vkVoidFunction)createDevice;
  if(!strcmp(n,"vkDestroyDevice"))return (PFN_vkVoidFunction)destroyDevice;
  if(!strcmp(n,"vkGetInstanceProcAddr"))return (PFN_vkVoidFunction)WMR_GetInstanceProcAddr;
- auto s=istate(i);if(s&&s->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
+ auto s=istate(i);if(s&&s->shaderCompat){if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)WMR_GetDeviceProcAddr;auto hook=steamVrShader::hook(n);if(hook)return hook;}
+ if(s&&s->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
  return s?s->gipa(i,n):nullptr;
 }
 extern "C" __attribute__((visibility("default"))) PFN_vkVoidFunction VKAPI_CALL WMR_GetDeviceProcAddr(VkDevice d,const char*n){
  if(!strcmp(n,"vkDestroyDevice"))return (PFN_vkVoidFunction)destroyDevice;
  if(!strcmp(n,"vkGetDeviceProcAddr"))return (PFN_vkVoidFunction)WMR_GetDeviceProcAddr;
- auto s=dstate(d);if(s&&s->instance->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
+ auto s=dstate(d);if(s&&s->instance->shaderCompat){auto hook=steamVrShader::hook(n);if(hook)return hook;}
+ if(s&&s->instance->active){auto bridge=bridgeHook(n);if(bridge)return bridge;auto hook=traceHook(n);if(hook)return hook;}
  return s?s->gdpa(d,n):nullptr;
 }
 extern "C" __attribute__((visibility("default"))) VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface*v){if(v->loaderLayerInterfaceVersion>2)v->loaderLayerInterfaceVersion=2;v->pfnGetInstanceProcAddr=WMR_GetInstanceProcAddr;v->pfnGetDeviceProcAddr=WMR_GetDeviceProcAddr;v->pfnGetPhysicalDeviceProcAddr=nullptr;return VK_SUCCESS;}

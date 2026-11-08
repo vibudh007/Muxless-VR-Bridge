@@ -6,7 +6,7 @@ image=Path(sys.argv[1]).resolve()
 probe=subprocess.run([str(image),'--doctor','--json'],text=True,capture_output=True,timeout=90)
 paths=json.loads(probe.stdout)['paths']
 with tempfile.TemporaryDirectory(prefix='wmr-appimage-test-') as tmp:
- root=Path(tmp);env={**os.environ,'APPIMAGE_EXTRACT_AND_RUN':'1','WMR_BRIDGE_PREFIX':str(root/'prefix'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_STATE_HOME':str(root/'state'),'WMR_STEAMVR_PATH':paths['steamvr'],'WMR_OASIS_PATH':paths['oasis']}
+ root=Path(tmp);env={**os.environ,'APPIMAGE_EXTRACT_AND_RUN':'1','HOME':str(root/'home'),'WMR_BRIDGE_PREFIX':str(root/'prefix'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_STATE_HOME':str(root/'state'),'WMR_STEAMVR_PATH':paths['steamvr'],'WMR_OASIS_PATH':paths['oasis']}
  def run(*args,code=0):
   p=subprocess.run([str(image),*args,'--json'],env=env,text=True,capture_output=True,timeout=90)
   if p.returncode!=code:raise AssertionError((args,p.returncode,p.stdout,p.stderr))
