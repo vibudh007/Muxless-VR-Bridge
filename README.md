@@ -58,29 +58,66 @@ The test system is an Asus ROG Strix G15 Advantage Edition (2021), which has an 
 
 ## Build from source
 
-Run these commands from the repository root.
+Clone the repository and run the build commands from its root:
+
+```sh
+git clone https://github.com/vibudh007/Muxless-VR-Bridge.git
+cd Muxless-VR-Bridge
+```
+
+The AppImage and native builds are independent. SteamVR, Oasis, and a connected headset are needed for use and live testing. Both builds can run without them.
 
 ### Build the AppImage
 
-Use this if you want an installer you can run with `--install` or share with someone else.
+Use this build for the Linux x86-64 installer. The host needs Bash, Python 3, a working rootless Podman setup, and Vulkan headers and registry files. The build pulls its container from Docker Hub, installs packages from Rocky Linux repositories, and downloads AppImage tooling and its runtime from GitHub.
+
+On Fedora, install the build dependencies:
 
 ```sh
+sudo dnf install git bash python3 podman vulkan-headers
+```
+
+On other distributions, package names may differ. The script expects these host paths:
+
+| Required path | Contents |
+| --- | --- |
+| `/usr/include/vulkan/` | Vulkan C headers |
+| `/usr/include/vk_video/` | Vulkan Video headers |
+| `/usr/share/vulkan/registry/vk.xml` | Vulkan command and type registry |
+
+Confirm that Podman works as your normal user, then build:
+
+```sh
+podman info --format '{{.Host.Security.Rootless}}'
 ./shim/appimage/build.sh
 ```
 
-Requires Python 3, rootless Podman, and host Vulkan headers, including Vulkan Video headers and the Vulkan registry (`vk.xml`). The script builds the binaries in a container and writes the AppImage and its checksum to `shim/dist/`.
+The first command should print `true`. Run the build without `sudo`. The script uses the container's compiler and development libraries and verifies the downloaded AppImage tool against its recorded digest. The AppImage and its checksum are written to `shim/dist/`.
+
+To check that the resulting AppImage starts without installing it:
+
+```sh
+APPIMAGE_EXTRACT_AND_RUN=1 ./shim/dist/Muxless-VR-Bridge-0.1-x86_64.AppImage --version
+```
 
 ### Build the native binaries
 
-Use this for local development. The script compiles the Vulkan layer and launcher into `shim/build/`.
+Use this build for local development. You’ll need Bash, Python 3, a C++17 compiler and linker, `pkg-config`, libdrm development files, Vulkan headers, the Vulkan loader development library, and the registry at `/usr/share/vulkan/registry/vk.xml`.
+
+On Fedora:
+
+```sh
+sudo dnf install git bash python3 gcc-c++ pkgconf-pkg-config libdrm-devel vulkan-loader-devel vulkan-headers
+```
+
+Then build and check the launcher:
 
 ```sh
 ./shim/build.sh
+./shim/build/wmr-gpu-bridge --version
 ```
 
-Requires a C++17 compiler, Python 3, `pkg-config`, libdrm development files, the Vulkan loader and headers, and the Vulkan registry (`vk.xml`).
-
-Both scripts expect the Vulkan registry under `/usr/share/vulkan/registry/`. The AppImage script also expects the host headers under `/usr/include/vulkan/` and `/usr/include/vk_video/`.
+This produces `shim/build/libmuxless_vr_bridge.so` and `shim/build/wmr-gpu-bridge`. Use the AppImage build to get the installer.
 
 ## License
 
