@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname -- "$0")/../.."
-python3 tools/verify_build_inputs.py
+python3 shim/appimage/verify_build_inputs.py
 podman build -t localhost/muxless-vr-bridge-build:glibc228 -f shim/appimage/Containerfile .
 podman run --rm --security-opt label=disable -v "$PWD:/work:rw" \
  -v /usr/include/vulkan:/headers/vulkan:ro -v /usr/include/vk_video:/headers/vk_video:ro \

@@ -2,7 +2,7 @@
 """Reject changed vendored inputs before using the pinned build toolchain."""
 import hashlib,json
 from pathlib import Path
-root=Path(__file__).resolve().parents[1]
+root=Path(__file__).resolve().parents[2]
 lock=json.loads((root/'shim/appimage/toolchain-lock.json').read_text())
 for relative,expected in lock['third_party'].items():
     path=root/relative

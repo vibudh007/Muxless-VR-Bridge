@@ -23,7 +23,3 @@ Write ownership intent before each payload replacement. Transitional `previous_s
 5. Unlink matching desktop alias before payload; remove matching owned files, retaining modified files and the receipt if leftovers remain. New removal also handles missing payloads/dangling owned aliases.
 6. Preserve logs, external drivers, calibration, udev and Bluetooth. No GPU probe, packaged payload, Oasis or existing SteamVR installation is needed for removal.
 7. Repeated removal succeeds when the receipt and managed registration/wrapper are already absent; refuse untracked residual registration rather than guessing ownership.
-
-## Required compatibility test
-
-`tools/test_uninstall_matrix.py` extracts and executes actual managers from retained AppImages in temporary HOME/XDG/prefix trees, under a private PID/proc namespace. It tests candidate→history and history→candidate as required passing pairs, and records unchanged history→history failures explicitly. It also covers upgrade/downgrade, future additive metadata, custom prefix, repeated removal and a real failed install with an unrelated collision retained. `tools/test_appimage_manager.cpp` exercises actual removal functions for modified/unsafe/partial receipt cases and process guards.

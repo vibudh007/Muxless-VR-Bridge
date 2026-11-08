@@ -6,7 +6,3 @@ __pycache__/
 *.AppImage
 *.dmp
 *.log
-/prototype/build/
-/prototype/results/
-*.ppm
-/compat/steamvr/build/
