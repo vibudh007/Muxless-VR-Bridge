@@ -6,7 +6,9 @@ The adapter selects vrcompositor and recognizes the exact shader fingerprint. Th
 
 This workaround is required on the tested RX 6800M / Lenovo Explorer setup with SteamVR beta 2.19.2. Other configurations may work without it.
 
-Build and install for the current user while SteamVR is stopped:
+For the prebuilt Linux x86-64 package, follow the [release installation instructions](../../README.md#2-install-the-steamvr-shader-workaround). The archive contains the compiled library and its Python 3 installer.
+
+To build and install from source for the current user, stop SteamVR and run:
 
 ```sh
 bash compat/steamvr/build.sh

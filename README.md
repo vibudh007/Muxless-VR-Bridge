@@ -4,7 +4,7 @@ WMR GPU Bridge lets SteamVR use a headset connected to an integrated GPU while S
 
 **Current release:** [0.14.0 portability alpha for Linux x86-64](https://github.com/vibudh007/wmr-gpu-bridge/releases/tag/v0.14.0-portability-alpha)
 
-**Required on the tested setup:** Install both the bridge AppImage and the separate SteamVR shader workaround before starting SteamVR. The AppImage contains the bridge. The workaround is built from this repository.
+**Required on the tested setup:** Install both the bridge AppImage and the separate SteamVR shader workaround before starting SteamVR. The AppImage contains the bridge. Download both prebuilt components and their checksums from the release page.
 
 ## Install and play
 
@@ -23,13 +23,13 @@ Installation is per user. The AppImage requires glibc 2.28 or newer and uses the
 
 ### 2. Install the SteamVR shader workaround
 
-Keep SteamVR closed. You’ll need Git, Python 3, rootless Podman, and the host Vulkan headers, including the Vulkan Video headers.
+Keep SteamVR closed. Download the prebuilt shader workaround archive and its matching `.sha256` file from the same release page. Python 3 is required to register the bundled library.
 
 ```sh
-git clone https://github.com/vibudh007/wmr-gpu-bridge.git
-cd wmr-gpu-bridge
-bash compat/steamvr/build.sh &&
-  python3 compat/steamvr/setup.py install
+adapter=wmr-steamvr-shader-workaround-0.14.0-x86_64
+sha256sum -c "$adapter.tar.gz.sha256" &&
+  tar -xzf "$adapter.tar.gz" &&
+  python3 "$adapter/setup.py" install
 ```
 
 The workaround is a separate Vulkan layer. It applies an in-memory replacement when a specific SteamVR compositor shader would read a uniform buffer missing from its pipeline layout. It changes no SteamVR files and has no game-specific rules. See the [adapter documentation](compat/steamvr/README.md) for details.
@@ -57,10 +57,10 @@ Start SteamVR from the library, then launch your game normally. If you manage St
 
 ## Uninstall
 
-Close SteamVR. In the source checkout, remove the shader adapter if you installed it:
+Close SteamVR. In the directory containing the extracted adapter folder, remove the shader workaround:
 
 ```sh
-python3 compat/steamvr/setup.py uninstall
+python3 wmr-steamvr-shader-workaround-0.14.0-x86_64/setup.py uninstall
 ```
 
 In the directory containing the AppImage, remove the bridge:
@@ -84,6 +84,7 @@ For the native bridge build, install a C++17 compiler, Python 3, pkg-config, lib
 ```sh
 ./shim/build.sh
 ./shim/appimage/build.sh
+bash compat/steamvr/build.sh
 ```
 
 The native build writes to `shim/build/`. The AppImage and checksum are written to `shim/dist/`. Standalone display and image-sharing probes are in `prototype/`.
