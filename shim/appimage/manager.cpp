@@ -57,10 +57,12 @@ static Discovery discover(){Discovery d;auto conf=xdg("XDG_CONFIG_HOME",home()/"
  return d;
 }
 static void check(json&report,const std::string&name,const std::string&level,const std::string&detail){report["checks"].push_back({{"name",name},{"level",level},{"detail",detail}});}
-static bool requireOasis(json&report,const Discovery&d){
+// Headset USB/tracking drivers belong to SteamVR's driver stack, not to the
+// cross-GPU display bridge. Oasis discovery is informational only.
+static void reportHeadsetDriver(json&report,const Discovery&d){
  bool present=!d.oasis.empty()&&fs::exists(d.oasis/"bin/linux64/driver_oasis.so");
- check(report,"Oasis",present?"ok":"error",present?d.oasis.string():"Install Oasis or set WMR_OASIS_PATH to its installation directory");
- return present;
+ if(present)check(report,"Oasis (WMR driver)","ok",d.oasis.string()+"; not a bridge dependency");
+ else check(report,"headset driver","ok","Use your headset's SteamVR driver; Oasis is not required by the bridge");
 }
 static bool namedVrAvailable(const json&report){
  if(!report.contains("vulkan")||!report["vulkan"].contains("devices"))return false;
@@ -98,7 +100,7 @@ static void authorizeHelper(const fs::path&helper){
 static json doctor(){auto d=discover();json r={{"schema",1},{"version",MUXLESS_VR_BRIDGE_VERSION},{"checks",json::array()},{"paths",{{"steamvr",d.steamvr.string()},{"oasis",d.oasis.string()},{"openvr",d.openvr.string()},{"manifest",manifestPath().string()},{"configuration",(config()/"settings.conf").string()},{"logs",(state()/"runs").string()}}}};
  auto wrongSteam=gpuLaunch::incompatible(gpuLaunch::steamProcesses());check(r,"Steam dGPU launch",wrongSteam.empty()?"ok":"warn",wrongSteam.empty()?"No incompatible Steam client found; start Steam through wmr-gpu-bridge --steam":"Steam PID(s) "+wrongSteam+" lack DRI_PRIME=1; the Steam launch helper will refuse mixed-GPU startup. Exit Steam and use wmr-gpu-bridge --steam.");
  struct utsname machine{};uname(&machine);check(r,"architecture",std::string(machine.machine)=="x86_64"?"ok":"error",machine.machine);int libcMajor=0,libcMinor=0;sscanf(gnu_get_libc_version(),"%d.%d",&libcMajor,&libcMinor);check(r,"glibc",(libcMajor>2||(libcMajor==2&&libcMinor>=28))?"ok":"error",std::string(gnu_get_libc_version())+" (requires 2.28 or newer)");
- requireOasis(r,d);std::vector<const char*>libraries={"libvulkan.so.1","libwayland-client.so.0","libdrm.so.2"};
+ reportHeadsetDriver(r,d);std::vector<const char*>libraries={"libvulkan.so.1","libwayland-client.so.0","libdrm.so.2"};
  for(const char*library:libraries){void*handle=dlopen(library,RTLD_LAZY|RTLD_LOCAL);check(r,library,handle?"ok":"error",handle?"host library available":std::string("missing: ")+dlerror());if(handle)dlclose(handle);}
  bool steamvr=!d.steamvr.empty()&&fs::exists(d.steamvr/"bin/linux64/vrcompositor");check(r,"SteamVR",steamvr?"ok":"error",steamvr?d.steamvr.string():"Install SteamVR or set WMR_STEAMVR_PATH to its installation directory");check(r,"native Steam",d.steamRoots.empty()?"warn":"ok",d.steamRoots.empty()?"native Steam paths not found; sandboxed Steam is not validated":"library folders discovered");
  if(fs::exists(probePath())){auto output=command({probePath().string()});try{r["vulkan"]=json::parse(output.second);if(output.first||!r["vulkan"].contains("devices"))throw std::runtime_error(output.second);unsigned hardware=0,capable=0;for(auto&gpu:r["vulkan"]["devices"]){if(gpu["type"]!=4){hardware++;if(!gpu["missing_extensions"].empty())check(r,gpu["name"].get<std::string>()+" sharing","warn","missing Vulkan extensions: "+gpu["missing_extensions"].dump());if(gpu["missing_extensions"].empty()&&(gpu["dma_buf_features"].get<unsigned>()&6)==6&&(gpu["sync_fd_features"].get<unsigned>()&3)==3)capable++;}}check(r,"Vulkan devices",hardware>=2?"ok":"warn",std::to_string(hardware)+" hardware GPUs; "+std::to_string(capable)+" advertise required sharing capabilities (real transfer still needs testing)");}catch(...){check(r,"Vulkan probe","error",output.second.substr(0,1500));}

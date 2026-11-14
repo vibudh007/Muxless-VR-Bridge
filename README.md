@@ -4,7 +4,7 @@ Run SteamVR on a laptop’s discrete GPU when the headset’s display connector 
 
 The bridge renders SteamVR’s final image in discrete-GPU memory, copies the completed image into an exportable scanout buffer, and presents that buffer through the display-owning GPU’s DRM lease. The display GPU does not render the scene. Resolution, refresh rate and game quality remain unchanged.
 
-This package contains the accepted minimal bridge and a **separate SteamVR patchset**. SteamVR and Oasis are required for the currently supported WMR setup. Development and headset testing use Mesa, Wayland and a Lenovo Explorer; other GPU/driver combinations need compatible Vulkan, DMA-BUF, synchronization and DRM-leasing support. Universal hardware compatibility and the 0.1 ms added-latency target have not been demonstrated.
+This package contains the accepted minimal bridge and a **separate SteamVR patchset**. SteamVR is the currently supported runtime. Keep your headset’s existing SteamVR driver: the bridge does not replace its USB or tracking support and does not require Oasis. The tested WMR setup uses Oasis. Development and headset testing use Mesa, Wayland and a Lenovo Explorer; other GPU/driver combinations need compatible Vulkan, DMA-BUF, synchronization and DRM-leasing support. Universal hardware compatibility and the 0.1 ms added-latency target have not been demonstrated.
 
 ## Install
 
@@ -24,6 +24,14 @@ Start Steam on the discrete GPU:
 ```
 
 Start SteamVR from your library and launch games normally. You may instead start Steam using `DRI_PRIME=1 steam`; the installed SteamVR launch option activates the bridge. Fully quit an existing Steam session before changing its GPU environment.
+
+For a system using NVIDIA’s driver, fully quit Steam and use its offload variables as well:
+
+```sh
+__NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only __GLX_VENDOR_LIBRARY_NAME=nvidia ~/.local/bin/wmr-gpu-bridge --steam
+```
+
+These variables are inherited by Steam and its children. Intel/NVIDIA interoperability remains unvalidated; a successful installation alone does not establish headset compatibility.
 
 The installed launcher can also wrap a command directly:
 
@@ -97,7 +105,7 @@ Use `2` for shader/layout compatibility or `3` for upload staging retirement. To
 
 ## Check an installation
 
-- `--doctor`: discover SteamVR/Oasis paths and report host-library, Vulkan and Wayland capabilities. Use it when installation or GPU/display discovery fails. Advertised support is not a headset presentation test.
+- `--doctor`: discover SteamVR and report host-library, Vulkan and Wayland capabilities. Oasis is reported if installed, but its absence does not block installation. Use it when installation or GPU/display discovery fails. Advertised support is not a headset presentation test.
 - `--verify`: check installed file hashes, registration and library loading. Use it after installation or an upgrade.
 - `--verify --runtime`: attempt to check that the installed bridge is mapped in a running compositor. Linux may deny access to capability-protected compositor processes, causing an unverified result even while the bridge is running. This does **not** prove correct images, frame delivery or latency.
 - `--logs --follow`: follow the newest managed command’s error log. SteamVR launches made through the installed wrapper create session directories under `${XDG_STATE_HOME:-$HOME/.local/state}/wmr-gpu-bridge/runs/`; the last three are kept. The bridge logs startup and errors, without per-frame tracing.
