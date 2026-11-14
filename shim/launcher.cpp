@@ -18,8 +18,8 @@ static fs::path installation() {
     path[n]=0;
     return fs::path(path).parent_path().parent_path()/"lib/wmr-gpu-bridge"/MUXLESS_VR_BRIDGE_VERSION;
 }
-static void activate(const fs::path& root) {
-    setenv("DRI_PRIME","1",1);
+static void activate(const fs::path& root,const gpuLaunch::Plan&gpu) {
+    gpuLaunch::apply(gpu);
     setenv("MUXLESS_MINIMAL","1",1);
     setenv("DISABLE_MUXLESS_MINIMAL","1",1);
     unsetenv("DISABLE_MUXLESS_VR_BRIDGE");
@@ -63,12 +63,13 @@ int main(int argc,char**argv){try{
         std::string manager=(root/"muxless-vr-bridge-manager").string();argv[0]=const_cast<char*>(manager.c_str());execv(manager.c_str(),argv);throw std::runtime_error("Manager not installed; use the AppImage");
     }
     bool steam=!strcmp(argv[1],"--steam");
-    if(steam)gpuLaunch::requireDgpuSteam();
+    auto gpu=gpuLaunch::detect(root/"muxless-vr-bridge-probe");
+    if(steam)gpuLaunch::requireDgpuSteam(gpu);
     int first=(!strcmp(argv[1],"--command")||!strcmp(argv[1],"--"))?2:1;
     if(!steam&&first>=argc)throw std::runtime_error("Missing command");
     if(!steam&&argv[first][0]=='-')throw std::runtime_error("Unknown option; use --help");
-    activate(root);
-    if(steam){std::vector<char*>args{const_cast<char*>("steam")};for(int i=2;i<argc;i++)args.push_back(argv[i]);args.push_back(nullptr);execvp("steam",args.data());}
-    else {startLog(argv+first);execvp(argv[first],argv+first);}
+    activate(root,gpu);
+    if(steam){std::fprintf(stderr,"Muxless VR Bridge: rendering GPU %s (%s, %s)\n",gpu.name.c_str(),gpu.selector.c_str(),gpu.nvidia?"NVIDIA offload":"Mesa selection");std::vector<char*>args{const_cast<char*>("steam")};for(int i=2;i<argc;i++)args.push_back(argv[i]);args.push_back(nullptr);execvp("steam",args.data());}
+    else {startLog(argv+first);std::fprintf(stderr,"Muxless VR Bridge: rendering GPU %s (%s, %s)\n",gpu.name.c_str(),gpu.selector.c_str(),gpu.nvidia?"NVIDIA offload":"Mesa selection");execvp(argv[first],argv+first);}
     std::perror("Cannot launch command");return 127;
 }catch(const std::exception&e){std::fprintf(stderr,"Muxless VR Bridge: %s\n",e.what());return 1;}}
