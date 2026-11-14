@@ -19,6 +19,7 @@
 #include <thread>
 #include <algorithm>
 #include "../version.hpp"
+#include "../../runtime/vr_profile.hpp"
 #include "../config_text.hpp"
 #include "../gpu_launch.hpp"
 #include "../subprocess.hpp"
@@ -38,7 +39,6 @@ static void write(const fs::path&p,const std::string&data){fs::create_directorie
 static std::string digest(const fs::path&p){std::ifstream f(p,std::ios::binary);if(!f)throw std::runtime_error("Cannot hash "+p.string());return picosha2::hash256_hex_string(std::istreambuf_iterator<char>(f),std::istreambuf_iterator<char>());}
 static void copyManaged(const fs::path&from,const fs::path&to){fs::create_directories(to.parent_path());auto tmp=to;tmp+=".new-"+std::to_string(getpid());try{fs::copy_file(from,tmp,fs::copy_options::overwrite_existing);fs::permissions(tmp,fs::perms::owner_all|fs::perms::group_read|fs::perms::group_exec|fs::perms::others_read|fs::perms::others_exec);fs::rename(tmp,to);}catch(...){std::error_code ec;fs::remove(tmp,ec);throw;}}
 static std::pair<int,std::string> command(const std::vector<std::string>&args){return boundedCommand(args);}
-static bool alive(int pid){return pid>0&&(kill(pid,0)==0||errno==EPERM);}
 static std::vector<int> processes(const std::string&name){std::vector<int>out;std::error_code ec;for(auto&e:fs::directory_iterator("/proc",ec)){auto id=e.path().filename().string();if(id.empty()||id.find_first_not_of("0123456789")!=std::string::npos)continue;struct stat st{};if(stat(e.path().c_str(),&st)||st.st_uid!=getuid())continue;auto value=read(e.path()/"comm");if(value==name+"\n")out.push_back(std::stoi(id));}return out;}
 static std::vector<std::string> lex(const std::string&s){std::vector<std::string>v;size_t i=0;while(i<s.size()){if(isspace((unsigned char)s[i])){i++;continue;}if(s[i]=='/'&&i+1<s.size()&&s[i+1]=='/'){while(i<s.size()&&s[i]!='\n')i++;continue;}if(s[i]=='{'||s[i]=='}'){v.push_back(s.substr(i++,1));continue;}std::string t;if(s[i]=='"'){i++;while(i<s.size()&&s[i]!='"'){if(s[i]=='\\'&&i+1<s.size())i++;t+=s[i++];}if(i<s.size())i++;}else{while(i<s.size()&&!isspace((unsigned char)s[i])&&s[i]!='{'&&s[i]!='}')t+=s[i++];}v.push_back(t);}return v;}
 static json parseVdf(const std::vector<std::string>&v,size_t&i){json o=json::object();while(i<v.size()){if(v[i]=="}"){i++;break;}auto key=v[i++];if(i>=v.size())break;if(v[i]=="{"){i++;o[key]=parseVdf(v,i);}else o[key]=v[i++];}return o;}
@@ -50,8 +50,10 @@ static Discovery discover(){Discovery d;auto conf=xdg("XDG_CONFIG_HOME",home()/"
  if(paths.contains("runtime"))for(auto&p:paths["runtime"])if(p.is_string()&&fs::exists(fs::path(p.get<std::string>())/"bin/linux64/vrcompositor")){d.steamvr=p.get<std::string>();break;}
  if(paths.contains("external_drivers"))for(auto&p:paths["external_drivers"])if(p.is_string()&&fs::exists(fs::path(p.get<std::string>())/"bin/linux64/driver_oasis.so")){d.oasis=p.get<std::string>();break;}
  for(auto root:{home()/".local/share/Steam",home()/".steam/root",home()/".steam/steam",xdg("XDG_DATA_HOME",home()/".local/share")/"Steam"})if(fs::exists(root/"steamapps")){root=fs::weakly_canonical(root);d.steamRoots.insert(root);d.libraries.insert(root);auto libraries=vdf(root/"steamapps/libraryfolders.vdf");if(libraries.contains("libraryfolders"))for(auto it=libraries["libraryfolders"].begin();it!=libraries["libraryfolders"].end();++it){if(it.value().is_object()&&it.value().contains("path"))d.libraries.insert(it.value()["path"].get<std::string>());}}
- for(auto root:d.libraries)for(auto pair:{std::make_pair("250820",&d.steamvr),std::make_pair("3824490",&d.oasis)})if(pair.second->empty()){auto app=vdf(root/"steamapps"/(std::string("appmanifest_")+pair.first+".acf"));if(app.contains("AppState")&&app["AppState"].contains("installdir"))*pair.second=root/"steamapps/common"/app["AppState"]["installdir"].get<std::string>();}
- if(const char*p=getenv("WMR_STEAMVR_PATH"))d.steamvr=p;if(const char*p=getenv("WMR_OASIS_PATH"))d.oasis=p;
+ const std::vector<std::pair<std::string,fs::path*>> apps={{"250820",&d.steamvr},{"3824490",&d.oasis}};
+ for(auto root:d.libraries)for(const auto&pair:apps)if(pair.second->empty()){auto app=vdf(root/"steamapps"/(std::string("appmanifest_")+pair.first+".acf"));if(app.contains("AppState")&&app["AppState"].contains("installdir"))*pair.second=root/"steamapps/common"/app["AppState"]["installdir"].get<std::string>();}
+ if(const char*p=getenv("WMR_STEAMVR_PATH"))d.steamvr=p;
+ if(const char*p=getenv("WMR_OASIS_PATH"))d.oasis=p;
  return d;
 }
 static void check(json&report,const std::string&name,const std::string&level,const std::string&detail){report["checks"].push_back({{"name",name},{"level",level},{"detail",detail}});}
@@ -59,6 +61,39 @@ static bool requireOasis(json&report,const Discovery&d){
  bool present=!d.oasis.empty()&&fs::exists(d.oasis/"bin/linux64/driver_oasis.so");
  check(report,"Oasis",present?"ok":"error",present?d.oasis.string():"Install Oasis or set WMR_OASIS_PATH to its installation directory");
  return present;
+}
+static bool namedVrAvailable(const json&report){
+ if(!report.contains("vulkan")||!report["vulkan"].contains("devices"))return false;
+ for(const auto&gpu:report["vulkan"]["devices"]){
+  if(gpu.value("type",0)!=2)continue;
+  auto major=gpu.value("render_major",uint64_t(0)),minor=gpu.value("render_minor",uint64_t(0));
+  if(!major)continue;
+  auto path=fs::path("/sys/dev/char")/(std::to_string(major)+":"+std::to_string(minor))/"device/pp_power_profile_mode";
+  if(vrProfile::parse(read(path)).vr>=0)return true;
+ }
+ return false;
+}
+static bool helperAuthorized(const fs::path&path){
+ struct stat st{};
+ return !stat(path.c_str(),&st)&&S_ISREG(st.st_mode)&&st.st_uid==0&&(st.st_mode&S_ISUID)&&!(st.st_mode&0022);
+}
+static void authorizeHelper(const fs::path&helper){
+ if(helperAuthorized(helper))return;
+ std::vector<std::string>args;
+ if(getuid()==0)args={helper.string(),"--authorize"};
+ else {
+  auto find=[](const char*name){const char*value=getenv("PATH");std::istringstream path(value?value:"");std::string part;while(std::getline(path,part,':'))if(!part.empty()&&access((fs::path(part)/name).c_str(),X_OK)==0)return (fs::path(part)/name).string();return std::string();};
+  auto elevation=find("pkexec");if(elevation.empty())elevation=find("sudo");
+  if(elevation.empty())throw std::runtime_error("Automatic VR mode needs one-time administrator authorization. Run as administrator: "+helper.string()+" --authorize");
+  args={elevation,helper.string(),"--authorize"};
+ }
+ std::cerr<<"Authorizing native VR-profile control once; no GameMode or LACT dependency.\n";
+ std::vector<char*>argv;for(auto&arg:args)argv.push_back(const_cast<char*>(arg.c_str()));argv.push_back(nullptr);
+ auto pid=fork();if(pid<0)throw std::runtime_error("Cannot start authorization");
+ if(pid==0){dup2(STDERR_FILENO,STDOUT_FILENO);execv(argv[0],argv.data());_exit(127);}
+ int status=0;pid_t result;do{result=waitpid(pid,&status,0);}while(result<0&&errno==EINTR);
+ if(result!=pid||!WIFEXITED(status)||WEXITSTATUS(status)!=0||!helperAuthorized(helper))
+  throw std::runtime_error("VR-profile authorization did not complete; rerun --install to retry");
 }
 static json doctor(){auto d=discover();json r={{"schema",1},{"version",MUXLESS_VR_BRIDGE_VERSION},{"checks",json::array()},{"paths",{{"steamvr",d.steamvr.string()},{"oasis",d.oasis.string()},{"openvr",d.openvr.string()},{"manifest",manifestPath().string()},{"configuration",(config()/"settings.conf").string()},{"logs",(state()/"runs").string()}}}};
  auto wrongSteam=gpuLaunch::incompatible(gpuLaunch::steamProcesses());check(r,"Steam dGPU launch",wrongSteam.empty()?"ok":"warn",wrongSteam.empty()?"No incompatible Steam client found; start Steam through wmr-gpu-bridge --steam":"Steam PID(s) "+wrongSteam+" lack DRI_PRIME=1; the Steam launch helper will refuse mixed-GPU startup. Exit Steam and use wmr-gpu-bridge --steam.");
@@ -69,11 +104,21 @@ static json doctor(){auto d=discover();json r={{"schema",1},{"version",MUXLESS_V
  if(fs::exists(probePath())){auto output=command({probePath().string()});try{r["vulkan"]=json::parse(output.second);if(output.first||!r["vulkan"].contains("devices"))throw std::runtime_error(output.second);unsigned hardware=0,capable=0;for(auto&gpu:r["vulkan"]["devices"]){if(gpu["type"]!=4){hardware++;if(!gpu["missing_extensions"].empty())check(r,gpu["name"].get<std::string>()+" sharing","warn","missing Vulkan extensions: "+gpu["missing_extensions"].dump());if(gpu["missing_extensions"].empty()&&(gpu["dma_buf_features"].get<unsigned>()&6)==6&&(gpu["sync_fd_features"].get<unsigned>()&3)==3)capable++;}}check(r,"Vulkan devices",hardware>=2?"ok":"warn",std::to_string(hardware)+" hardware GPUs; "+std::to_string(capable)+" advertise required sharing capabilities (real transfer still needs testing)");}catch(...){check(r,"Vulkan probe","error",output.second.substr(0,1500));}
   if(getenv("WAYLAND_DISPLAY")){auto wayland=command({probePath().string(),"--wayland"});try{r["wayland"]=json::parse(wayland.second);unsigned leases=r["wayland"].value("drm_lease_globals",0);check(r,"Wayland DRM leasing",leases?"ok":"warn",std::to_string(leases)+" lease-device globals; headset lease is verified only during SteamVR");}catch(...){check(r,"Wayland probe","warn",wayland.second.substr(0,500));}}else check(r,"display session","warn","WAYLAND_DISPLAY absent; tested presentation path is Wayland DRM leasing");
  }else check(r,"capability probe","error","probe executable missing");
+ if(namedVrAvailable(r)){
+  auto helper=prefix()/"lib/wmr-gpu-bridge"/MUXLESS_VR_BRIDGE_VERSION/"muxless-vr-profile";
+  check(r,"native VR workload profile",helperAuthorized(helper)?"ok":"warn",helperAuthorized(helper)?"Named VR mode supported; native helper authorized":"Named VR mode supported; --install requests one-time administrator authorization");
+ }else check(r,"native VR workload profile","ok","No named VR mode exposed by the detected discrete-GPU driver; policy stays unchanged");
  return r;
 }
 static std::vector<fs::path> runs(){std::vector<fs::path>v;std::error_code ec;if(!fs::exists(state()/"runs"))return v;for(auto&e:fs::directory_iterator(state()/"runs",ec))if(e.is_directory()&&!e.is_symlink()&&fs::exists(e.path()/"run.json"))v.push_back(e.path());std::sort(v.begin(),v.end(),[](const fs::path&a,const fs::path&b){return fs::last_write_time(a/"run.json")>fs::last_write_time(b/"run.json");});return v;}
-static json runtimeStatus(){auto list=runs();if(list.empty())return {{"state","unverified"},{"detail","no managed SteamVR run has been recorded yet"}};json selected=json::object();fs::path component;for(auto&e:fs::directory_iterator(list[0]))if(e.path().filename().string().find("component-")==0&&e.path().extension()==".json"){auto value=readJson(e.path());if(value.value("started_ns",uint64_t(0))>selected.value("started_ns",uint64_t(0))){selected=value;component=e.path();}}
- if(selected.empty())return {{"state","unverified"},{"detail","run exists without component status"}};int pid=selected.value("pid",0);bool live=alive(pid);std::string event=selected.value("event","");auto age=std::chrono::duration_cast<std::chrono::seconds>(fs::file_time_type::clock::now()-fs::last_write_time(component)).count();std::string health=!live?(event=="stopped"?"stopped":"failed"):(event=="error"?"failed":(event=="presenting"&&age<20?"presenting":"waiting"));return {{"state",health},{"pid",pid},{"event",event},{"frames",selected.value("frames",uint64_t(0))},{"heartbeat_age_seconds",age},{"session",list[0].string()},{"detail",health=="waiting"?"no recent successful present; headset may be in standby":"runtime state from layer heartbeat and process liveness"}};
+static json runtimeStatus(){
+ auto list=runs();bool loaded=false;int pid=0;
+ for(int candidate:processes("vrcompositor")){
+  auto maps=read(fs::path("/proc")/std::to_string(candidate)/"maps");
+  if(maps.find("/lib/wmr-gpu-bridge/")!=std::string::npos&&maps.find("libmuxless_vr_bridge.so")!=std::string::npos){loaded=true;pid=candidate;break;}
+ }
+ return {{"state",loaded?"loaded":"unverified"},{"pid",pid},{"session",list.empty()?"":list[0].string()},
+         {"detail",loaded?"Managed bridge mapped in vrcompositor; this alone does not verify live scanout":"No running compositor with the installed bridge was found"}};
 }
 static bool under(const fs::path&p,const fs::path&root){auto relative=fs::weakly_canonical(p).lexically_relative(fs::weakly_canonical(root));return !relative.empty()&&*relative.begin()!="..";}
 static bool verifyPayload(){auto root=appDir();auto payload=readJson(root/"payload.json");if(!payload.contains("files"))throw std::runtime_error("Payload manifest missing; use the AppImage to install");for(auto&file:payload["files"]){auto path=root/file["path"].get<std::string>();if(!under(path,root)||digest(path)!=file["sha256"].get<std::string>())throw std::runtime_error("Payload integrity check failed: "+path.string());}return true;}
@@ -132,10 +177,65 @@ static bool ownedFile(const fs::path& p,fs::file_status status,const json& f){
   }else if(fs::is_regular_file(status)){auto hash=digest(p);owned=hash==f["sha256"].get<std::string>()||hash==f.value("previous_sha256","");}
  return owned;
 }
+struct Patch {const char*id;const char*name;const char*file;const char*purpose;};
+static const Patch patches[]={
+ {"001","Descriptor cache ownership","descriptor-arena.enabled","Prevents descriptor-pool exhaustion; owns, frees and reclaims backing allocations."},
+ {"002","Shader/layout compatibility","shader-compat.enabled","Repairs the recognized incompatible SteamVR shader/layout; applies only to the verified 2.19.2 executable."},
+ {"006","Upload staging retirement","transfer-ring.enabled","Retires completed uploads safely, preventing staging-buffer exhaustion and related compositor crashes."}
+};
+static fs::path patchDirectory(){return prefix()/"lib/wmr-gpu-bridge/patches";}
+static bool patchOn(const Patch&p){auto text=read(patchDirectory()/p.file);return text=="1\n"||text=="1";}
+static void patchHelp(){
+ const char*rule="------------------------------------------------------------------------";
+ std::cout<<rule<<"\nSteamVR patches (independent of the display bridge)\n"<<rule<<"\n\n"
+          <<"Usage: --toggle-patches [help | all | 1 | 2 | 3]\n\n"
+          <<"Restart SteamVR to apply changes.\n\n";
+ for(size_t i=0;i<sizeof(patches)/sizeof(patches[0]);++i){
+  const auto&p=patches[i];
+  std::cout<<" "<<i+1<<": "<<p.name<<" ["<<(patchOn(p)?"selected":"not selected")<<"]\n"
+           <<"   -"<<p.purpose<<"\n\n";
+ }
+ std::cout<<"Disabling a required repair can reintroduce crashes. No SteamVR files are edited.\n\n"
+          <<" all\n   -toggle between enabling and disabling every patch.\n";
+}
+static json togglePatches(std::string target){
+ if(target.rfind("SVR-",0)==0)target.erase(0,4);
+ if(target=="1")target="001";else if(target=="2")target="002";else if(target=="3")target="006";
+ if(target!="all"&&std::none_of(std::begin(patches),std::end(patches),[&](const Patch&p){return target==p.id;}))throw std::runtime_error("Unknown patch ID; use --toggle-patches help");
+ ManagerLock lock;auto receiptFile=state()/"install-receipt.json";auto receipt=readJson(receiptFile);
+ if(!receipt.contains("files"))throw std::runtime_error("Install the AppImage before changing patches");
+ if(receipt.value("prefix","")!=prefix().string())throw std::runtime_error("Installation prefix differs from receipt");
+ bool allOn=std::all_of(std::begin(patches),std::end(patches),[](const Patch&p){return patchOn(p);});
+ json changes=json::array();
+ for(const auto&p:patches)if(target=="all"||target==p.id){
+  auto path=patchDirectory()/p.file;auto found=std::find_if(receipt["files"].begin(),receipt["files"].end(),[&](const json&f){return f.value("path","")==path.string();});
+  if(found==receipt["files"].end()||!fs::is_regular_file(fs::symlink_status(path))||!ownedFile(path,fs::symlink_status(path),*found))throw std::runtime_error("Patch setting is missing, modified or not owned: "+path.string());
+ }
+ for(const auto&p:patches)if(target=="all"||target==p.id){
+  auto path=patchDirectory()/p.file;bool enabled=target=="all"?!allOn:!patchOn(p);std::string text=enabled?"1\n":"0\n";
+  auto found=std::find_if(receipt["files"].begin(),receipt["files"].end(),[&](const json&f){return f.value("path","")==path.string();});
+  (*found)["previous_sha256"]=(*found)["sha256"];(*found)["sha256"]=picosha2::hash256_hex_string(text);
+  write(receiptFile,receipt.dump(2)+"\n");write(path,text);found->erase("previous_sha256");
+  write(receiptFile,receipt.dump(2)+"\n");changes.push_back({{"id",p.id},{"name",p.name},{"selected",enabled}});
+ }
+ return {{"patches",changes},{"restart_required",true},{"note","Changes take effect on the next SteamVR launch; verified-build guards remain enforced."}};
+}
 static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();for(const auto&c:preflight["checks"])if(c["level"]=="error")throw std::runtime_error("Preflight: "+c["name"].get<std::string>()+": "+c["detail"].get<std::string>()+"; run --doctor for the full report");if(!processes("vrcompositor").empty()||!processes("vrserver").empty())throw std::runtime_error("Close SteamVR before installing/upgrading");
  legacyShaderFiles();
  auto root=appDir(),libdir=prefix()/"lib/wmr-gpu-bridge"/MUXLESS_VR_BRIDGE_VERSION;json receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files"))receipt["files"]=json::array();std::map<std::string,json>files;for(auto&f:receipt["files"])files[f["path"].get<std::string>()]=f;
- auto existing=readJson(manifestPath());if(fs::exists(manifestPath())&&!existing.contains("layer"))throw std::runtime_error("Existing manifest is malformed or unrecognized; refusing overwrite");if(existing.contains("layer")){if(existing["layer"].value("name","")!="VK_LAYER_WMR_gpu_bridge")throw std::runtime_error("Manifest is owned by another layer");fs::path previous=existing["layer"].value("library_path","");if(!under(previous,prefix()/"lib/wmr-gpu-bridge"))throw std::runtime_error("Existing layer points outside the managed prefix; save/resolve that installation first");if(fs::is_regular_file(previous))files[previous.string()]={{"path",previous.string()},{"sha256",digest(previous)}};write(state()/"manifest-before-appimage-install.json",existing.dump(2)+"\n");}
+ auto existing=readJson(manifestPath());
+ if(fs::exists(manifestPath())){
+  json layers=existing.contains("layers")?existing["layers"]:json::array();
+  if(existing.contains("layer"))layers.push_back(existing["layer"]);
+  if(!layers.is_array()||layers.empty())throw std::runtime_error("Existing manifest is malformed; refusing overwrite");
+  for(const auto&layer:layers){
+   auto name=layer.value("name","");
+   if(name!="VK_LAYER_WMR_gpu_bridge"&&name!="VK_LAYER_MUXLESS_bridge"&&name!="VK_LAYER_MUXLESS_steamvr_patches")throw std::runtime_error("Manifest is owned by another layer");
+   fs::path previous=layer.value("library_path","");
+   if(!under(previous,prefix()/"lib/wmr-gpu-bridge"))throw std::runtime_error("Existing layer points outside the managed prefix");
+   if(fs::is_regular_file(previous))files[previous.string()]={{"path",previous.string()},{"sha256",digest(previous)}};
+  }
+ }
  auto desktop=steamDesktop();
  auto oldShortcut=files.find(desktop.string());
  if(oldShortcut!=files.end()){
@@ -158,12 +258,48 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
   if(old!=files.end()&&old->second.value("sha256","")!=hash)owned["previous_sha256"]=old->second["sha256"];
   files[path.string()]=owned;persistReceipt();
  };
- std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"}};
- for(auto&pair:copies){record(pair.second,digest(pair.first));copyManaged(pair.first,pair.second);}
- json manifest={{"file_format_version","1.2.0"},{"layer",{{"name","VK_LAYER_WMR_gpu_bridge"},{"type","GLOBAL"},{"library_path",(libdir/"libmuxless_vr_bridge.so").string()},{"api_version","1.3.0"},{"implementation_version","3"},{"description","Muxless VR Bridge presentation layer"},{"functions",{{"vkGetInstanceProcAddr","MuxlessVrBridge_GetInstanceProcAddr"},{"vkGetDeviceProcAddr","MuxlessVrBridge_GetDeviceProcAddr"}}},{"disable_environment",{{"DISABLE_WMR_GPU_BRIDGE","1"}}}}}};
+ std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/lib/libsteamvr_runtime_patches.so",libdir/"libsteamvr_runtime_patches.so"},{root/"usr/bin/muxless-vr-profile",libdir/"muxless-vr-profile"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"}};
+ for(auto&pair:copies){
+  auto hash=digest(pair.first);
+  bool keepAuthorized=pair.second.filename()=="muxless-vr-profile"&&helperAuthorized(pair.second)&&digest(pair.second)==hash;
+  record(pair.second,hash);if(!keepAuthorized)copyManaged(pair.first,pair.second);
+ }
+ if(namedVrAvailable(preflight)){
+  authorizeHelper(libdir/"muxless-vr-profile");
+  files[(libdir/"muxless-vr-profile").string()]["required_mode"]="root-setuid";
+  persistReceipt();
+ }
+ json layers=json::array();
+ auto layer=[&](const char*name,const char*library,const char*enable,const char*disable,const char*description){
+  layers.push_back({{"name",name},{"type","GLOBAL"},{"library_path",(libdir/library).string()},{"api_version","1.3.0"},{"implementation_version","2"},{"description",description},{"functions",{{"vkNegotiateLoaderLayerInterfaceVersion","vkNegotiateLoaderLayerInterfaceVersion"}}},{"enable_environment",{{enable,"1"}}},{"disable_environment",{{disable,"1"}}}});
+ };
+ layer("VK_LAYER_MUXLESS_bridge","libmuxless_vr_bridge.so","MUXLESS_MINIMAL","DISABLE_MUXLESS_VR_BRIDGE","Muxless VR Bridge display transport");
+ layer("VK_LAYER_MUXLESS_steamvr_patches","libsteamvr_runtime_patches.so","MUXLESS_STEAMVR_PATCHES","DISABLE_MUXLESS_STEAMVR_PATCHES","Independent verified-build SteamVR repairs");
+ json manifest={{"file_format_version","1.2.0"},{"layers",layers}};
+ for(const auto&p:patches){
+  auto path=patchDirectory()/p.file;auto previous=files.find(path.string());
+  if(fs::exists(path)){
+   if(previous==files.end()||!ownedFile(path,fs::symlink_status(path),previous->second))throw std::runtime_error("Patch setting is not owned or was modified: "+path.string());
+  }else{std::string text="1\n";record(path,picosha2::hash256_hex_string(text));write(path,text);}
+ }
+ // Diagnostic observer is never activated by release toggles.
+ auto observer=patchDirectory()/"descriptor-observer.enabled";std::string observerText="0\n";
+ record(observer,picosha2::hash256_hex_string(observerText));write(observer,observerText);
  auto manifestText=manifest.dump(2)+"\n";record(manifestPath(),picosha2::hash256_hex_string(manifestText));write(manifestPath(),manifestText);
- auto configFile=config()/"settings.conf";if(fs::exists(configFile)&&!fs::exists(state()/"configuration-before-appimage.conf"))write(state()/"configuration-before-appimage.conf",read(configFile));auto settings=read(configFile);settings=bridgeSettings::set(settings,"enabled","1",true);settings=bridgeSettings::set(settings,"direct_scanout","1",true);settings=bridgeSettings::set(settings,"descriptor_diagnostics","0",true);write(configFile,settings);
- auto launchChanges=configureSteam();for(auto&f:files){f.second.erase("previous_sha256");f.second.erase("previous_target");}receipt={{"launch_options",launchChanges},{"schema",1},{"version",MUXLESS_VR_BRIDGE_VERSION},{"prefix",prefix().string()},{"manifest",manifestPath().string()},{"files",json::array()}};// Compatibility ABI: unlink desktop alias before removing its payload.
+ auto configFile=config()/"settings.conf";if(fs::exists(configFile)&&!fs::exists(state()/"configuration-before-appimage.conf"))write(state()/"configuration-before-appimage.conf",read(configFile));auto settings=read(configFile);settings=bridgeSettings::set(settings,"enabled","1",true);write(configFile,settings);
+ auto launchChanges=configureSteam();
+ for(auto it=files.begin();it!=files.end();){
+  fs::path path=it->first;
+  if(under(path,prefix()/"lib/wmr-gpu-bridge")&&!under(path,libdir)&&!under(path,patchDirectory())){
+   auto status=fs::symlink_status(path);
+   if(status.type()==fs::file_type::not_found||ownedFile(path,status,it->second)){
+    if(status.type()!=fs::file_type::not_found)fs::remove(path);
+    std::error_code ec;fs::remove(path.parent_path(),ec);it=files.erase(it);continue;
+   }
+  }
+  ++it;
+ }
+ for(auto&f:files){f.second.erase("previous_sha256");f.second.erase("previous_target");}receipt={{"launch_options",launchChanges},{"schema",1},{"version",MUXLESS_VR_BRIDGE_VERSION},{"prefix",prefix().string()},{"manifest",manifestPath().string()},{"files",json::array()}};// Compatibility ABI: unlink desktop alias before removing its payload.
  receipt["removal_protocol"]=1;
  if(files.count(desktop.string()))receipt["files"].push_back(files.at(desktop.string()));
  for(auto&f:files)if(f.first!=desktop.string())receipt["files"].push_back(f.second);
@@ -171,7 +307,10 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
  for(const auto& path:legacyShaderFiles())fs::remove(path);
  return {{"installed",true},{"version",MUXLESS_VR_BRIDGE_VERSION},{"launch_option","\""+(prefix()/"bin/wmr-gpu-bridge").string()+"\" %command%"},{"note",processes("steam").empty()?"per-user activation installed; available SteamVR launch options configured without changing vendor files":"per-user activation installed; Steam is running so launch options were not edited; use the printed option"}};
 }
-static json verify(){json report={{"checks",json::array()},{"runtime",runtimeStatus()}};auto receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files")){check(report,"installation receipt","error","missing; install using AppImage");return report;}for(auto&f:receipt["files"]){fs::path path=f["path"].get<std::string>();bool ok=fs::is_regular_file(path)&&digest(path)==f["sha256"].get<std::string>();check(report,path.string(),ok?"ok":"error",ok?"checksum matches":"missing or changed");}auto manifest=readJson(manifestPath());if(manifest.contains("layer")){auto library=manifest["layer"].value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,"layer loading",ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}return report;}
+static json verify(){json report={{"checks",json::array()},{"runtime",runtimeStatus()}};auto receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files")){check(report,"installation receipt","error","missing; install using AppImage");return report;}for(auto&f:receipt["files"]){fs::path path=f["path"].get<std::string>();bool ok=fs::is_regular_file(path)&&digest(path)==f["sha256"].get<std::string>();check(report,path.string(),ok?"ok":"error",ok?"checksum matches":"missing or changed");if(f.value("required_mode","")=="root-setuid")check(report,"VR-profile authorization",helperAuthorized(path)?"ok":"error",helperAuthorized(path)?"native helper authorized":"root-owned setuid authorization missing; rerun --install");}auto manifest=readJson(manifestPath());json layers=manifest.value("layers",json::array());if(manifest.contains("layer"))layers.push_back(manifest["layer"]);
+ if(layers.empty())check(report,"Vulkan registration","error","No registered layers");
+ for(const auto&layer:layers){auto library=layer.value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,layer.value("name","layer"),ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}
+ return report;}
 // Removal protocol 1: schema-1 receipts remain readable by legacy AppImages.
 // New metadata is additive; paths and receipt order are part of the ABI.
 static bool lexicallyUnder(const fs::path&p,const fs::path&root){
@@ -226,9 +365,30 @@ static json uninstall(){
 }
 static void print(const json&r,bool machine){if(machine){std::cout<<r.dump(2)<<"\n";return;}if(r.contains("checks"))for(auto&c:r["checks"])std::cout<<"["<<c["level"].get<std::string>()<<"] "<<c["name"].get<std::string>()<<": "<<c["detail"].get<std::string>()<<"\n";if(r.contains("paths"))std::cout<<"Paths:\n"<<r["paths"].dump(2)<<"\n";if(r.contains("runtime"))std::cout<<"Runtime:\n"<<r["runtime"].dump(2)<<"\n";if(!r.contains("checks"))std::cout<<r.dump(2)<<"\n";}
 static void logs(bool follow){fs::path selected;uintmax_t offset=0;for(;;){auto list=runs();fs::path latest;if(!list.empty()){fs::file_time_type time=fs::file_time_type::min();for(auto&e:fs::directory_iterator(list[0]))if(e.path().extension()==".log"&&fs::last_write_time(e.path())>time){latest=e.path();time=fs::last_write_time(e.path());}}if(!latest.empty()){if(latest!=selected){selected=latest;offset=0;std::cout<<"--- "<<selected<<" ---\n";}auto size=fs::file_size(selected);if(size<offset)offset=0;std::ifstream f(selected);f.seekg(offset);std::string chunk(std::istreambuf_iterator<char>(f),{});std::cout<<chunk<<std::flush;offset=size;}else if(!follow){std::cout<<"No managed SteamVR runs yet.\n";}if(!follow)break;std::this_thread::sleep_for(std::chrono::milliseconds(250));}}
-int main(int argc,char**argv){try{bool machine=false,follow=false,requireRuntime=false;std::string operation="--doctor";for(int i=1;i<argc;i++){std::string arg=argv[i];if(arg=="--json")machine=true;else if(arg=="--follow")follow=true;else if(arg=="--runtime")requireRuntime=true;else if(arg=="--no-steam-config")managerSkipSteamConfig=true;else operation=arg;}
- if(operation=="--version"){std::cout<<MUXLESS_VR_BRIDGE_VERSION<<"\n";return 0;}if(operation=="--help"){std::cout<<"Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nCommands: --doctor [--json], --install, --verify [--json], --logs [--follow], --uninstall\nNo root or package-manager changes. Paths can be overridden with WMR_STEAMVR_PATH and WMR_OASIS_PATH.\n";return 0;}
+int main(int argc,char**argv){try{
+ bool machine=false,follow=false,requireRuntime=false;std::string operation="--doctor",target="help";bool chosen=false;
+ for(int i=1;i<argc;i++){
+  std::string arg=argv[i];
+  if(arg=="--json")machine=true;else if(arg=="--follow")follow=true;else if(arg=="--runtime")requireRuntime=true;
+  else if(arg=="--no-steam-config")managerSkipSteamConfig=true;
+  else {
+   if(chosen)throw std::runtime_error("Supply one command; use --help");
+   chosen=true;operation=arg;
+   if(arg=="--toggle-patches"||arg=="-toggle-patches"){
+    operation="--toggle-patches";
+    if(i+1<argc&&argv[i+1][0]!='-')target=argv[++i];
+   }
+  }
+ }
+ if(operation=="--version"){std::cout<<MUXLESS_VR_BRIDGE_VERSION<<"\n";return 0;}
+ if(operation=="--help"){std::cout<<"Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nCommands: --install, --uninstall, --doctor [--json], --verify [--runtime], --logs [--follow]\n          --toggle-patches [help | all | 1 | 2 | 3]\nThe AppImage bundles the independent SteamVR patchset. Automatic VR profile control requests one-time administrator authorization when supported.\n";return 0;}
+ if(operation=="--toggle-patches"){
+  if(target=="help"){patchHelp();return 0;}print(togglePatches(target),machine);return 0;
+ }
  if(operation=="--doctor"){auto r=doctor();print(r,machine);return std::any_of(r["checks"].begin(),r["checks"].end(),[](const json&c){return c["level"]=="error";})?1:0;}
- if(operation=="--install"){auto r=install();r["verification"]=verify();print(r,machine);return std::any_of(r["verification"]["checks"].begin(),r["verification"]["checks"].end(),[](const json&c){return c["level"]=="error";})?1:0;}if(operation=="--verify"){auto r=verify();print(r,machine);if(std::any_of(r["checks"].begin(),r["checks"].end(),[](const json&c){return c["level"]=="error";})||r["runtime"].value("state","")=="failed")return 1;return requireRuntime&&r["runtime"].value("state","")!="presenting"?2:0;}
- if(operation=="--uninstall"){print(uninstall(),machine);return 0;}if(operation=="--logs"){logs(follow);return 0;}throw std::runtime_error("Unknown command; use --help");
- }catch(const std::exception&e){std::cerr<<"wmr-gpu-bridge: "<<e.what()<<"\n";return 1;}}
+ if(operation=="--install"){auto r=install();r["verification"]=verify();print(r,machine);return std::any_of(r["verification"]["checks"].begin(),r["verification"]["checks"].end(),[](const json&c){return c["level"]=="error";})?1:0;}
+ if(operation=="--verify"){auto r=verify();print(r,machine);if(std::any_of(r["checks"].begin(),r["checks"].end(),[](const json&c){return c["level"]=="error";}))return 1;return requireRuntime&&r["runtime"].value("state","")!="loaded"?2:0;}
+ if(operation=="--uninstall"){print(uninstall(),machine);return 0;}
+ if(operation=="--logs"){logs(follow);return 0;}
+ throw std::runtime_error("Unknown command; use --help");
+}catch(const std::exception&e){std::cerr<<"Muxless VR Bridge: "<<e.what()<<"\n";return 1;}}

@@ -1,8 +1,7 @@
-__pycache__/
-*.py[cod]
 /shim/build/
 /shim/build-portable/
 /shim/dist/
-*.AppImage
-*.dmp
-*.log
+__pycache__/
+
+# Distribution binaries are uploaded as GitHub Release assets.
+/releases/

@@ -6,9 +6,10 @@ assert ('#define MUXLESS_VR_BRIDGE_VERSION \"'+version+'\"') in (root/'shim/vers
 dist=root/'shim/dist';dist.mkdir(parents=True,exist_ok=True)
 staging=tempfile.TemporaryDirectory(dir=dist)
 app=Path(staging.name)/'Muxless-VR-Bridge.AppDir';(app/'usr/bin').mkdir(parents=True);(app/'usr/lib').mkdir()
-for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe']:
+for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe','muxless-vr-profile']:
  shutil.copy2(root/'shim/build-portable'/name,app/'usr/bin'/name)
-shutil.copy2(root/'shim/build-portable/libmuxless_vr_bridge.so',app/'usr/lib/libmuxless_vr_bridge.so')
+for library in ['libmuxless_vr_bridge.so', 'libsteamvr_runtime_patches.so']:
+ shutil.copy2(root/'shim/build-portable'/library,app/'usr/lib'/library)
 for name in ['AppRun','muxless-vr-bridge.desktop','muxless-vr-bridge.png']:shutil.copy2(root/'shim/appimage'/name,app/name)
 icon=app/'.DirIcon'
 icon.symlink_to('muxless-vr-bridge.png')
@@ -18,7 +19,7 @@ shutil.copy2(root/'shim/third_party/nlohmann/LICENSE.MIT',licenses/'nlohmann-jso
 shutil.copy2(root/'shim/third_party/picosha2/LICENSE',licenses/'PicoSHA2.MIT')
 for p in (root/'shim/build-portable/licenses').glob('COPYING*'):shutil.copy2(p,licenses/p.name)
 files=[p for p in sorted(app.rglob('*')) if p.is_file() and p.name!='payload.json']
-payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan and Wayland libraries','files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
+payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan and Wayland libraries','patches':['SVR-001','SVR-002','SVR-006'],'files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
 (app/'payload.json').write_text(json.dumps(payload,indent=2)+'\n')
 lock=json.loads((root/'shim/appimage/toolchain-lock.json').read_text());tool=Path('/tmp/muxless-vr-bridge-appimagetool.AppImage')
 if not tool.exists():tool.write_bytes(urllib.request.urlopen(lock['tool_url']).read())

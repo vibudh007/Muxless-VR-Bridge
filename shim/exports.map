@@ -1,4 +1,0 @@
-{
- global: MuxlessVrBridge_GetInstanceProcAddr; MuxlessVrBridge_GetDeviceProcAddr; vkNegotiateLoaderLayerInterfaceVersion;
- local: *;
-};
