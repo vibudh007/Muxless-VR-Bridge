@@ -160,9 +160,17 @@ VKAPI_ATTR void VKAPI_CALL ringCopy(VkCommandBuffer c,VkBuffer src,VkBuffer dst,
 VKAPI_ATTR void VKAPI_CALL ringImage(VkCommandBuffer c,VkBuffer src,VkImage dst,VkImageLayout l,uint32_t n,const VkBufferImageCopy*r){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->copy(c,src,UINT64_MAX);ringNext<PFN_vkCmdCopyBufferToImage>(d,h,"vkCmdCopyBufferToImage")(c,src,dst,l,n,r);}
 VKAPI_ATTR void VKAPI_CALL ringExecute(VkCommandBuffer c,uint32_t n,const VkCommandBuffer*cmds){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->unsupported();ringNext<PFN_vkCmdExecuteCommands>(d,h,"vkCmdExecuteCommands")(c,n,cmds);}
 VKAPI_ATTR void VKAPI_CALL ringFreeMemory(VkDevice h,VkDeviceMemory m,const VkAllocationCallbacks*a){auto d=deviceFor(h);if(d.ring)d.ring->unmapped(m);ringNext<PFN_vkFreeMemory>(d,h,"vkFreeMemory")(h,m,a);}
-VKAPI_ATTR VkResult VKAPI_CALL ringSubmit2(VkQueue q,uint32_t n,const VkSubmitInfo2*i,VkFence f){auto d=commandDevice(q);auto h=ringDevice(key(q));if(d.ring)d.ring->unsupported();return ringNext<PFN_vkQueueSubmit2>(d,h,"vkQueueSubmit2")(q,n,i,f);}
-VKAPI_ATTR void VKAPI_CALL ringCopy2(VkCommandBuffer c,const VkCopyBufferInfo2*i){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->unsupported();ringNext<PFN_vkCmdCopyBuffer2>(d,h,"vkCmdCopyBuffer2")(c,i);}
-VKAPI_ATTR void VKAPI_CALL ringImage2(VkCommandBuffer c,const VkCopyBufferToImageInfo2*i){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->unsupported();ringNext<PFN_vkCmdCopyBufferToImage2>(d,h,"vkCmdCopyBufferToImage2")(c,i);}
+// Extension aliases are not interchangeable with core entry-point availability.
+// Resolve exactly the spelling requested by the application.
+template<bool Khr> VkResult submit2(VkQueue q,uint32_t n,const VkSubmitInfo2*i,VkFence f){auto d=commandDevice(q);auto h=ringDevice(key(q));if(d.ring)d.ring->unsupported();return ringNext<PFN_vkQueueSubmit2>(d,h,Khr?"vkQueueSubmit2KHR":"vkQueueSubmit2")(q,n,i,f);}
+template<bool Khr> void copy2(VkCommandBuffer c,const VkCopyBufferInfo2*i){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->unsupported();ringNext<PFN_vkCmdCopyBuffer2>(d,h,Khr?"vkCmdCopyBuffer2KHR":"vkCmdCopyBuffer2")(c,i);}
+template<bool Khr> void image2(VkCommandBuffer c,const VkCopyBufferToImageInfo2*i){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->unsupported();ringNext<PFN_vkCmdCopyBufferToImage2>(d,h,Khr?"vkCmdCopyBufferToImage2KHR":"vkCmdCopyBufferToImage2")(c,i);}
+VKAPI_ATTR VkResult VKAPI_CALL ringSubmit2(VkQueue q,uint32_t n,const VkSubmitInfo2*i,VkFence f){return submit2<false>(q,n,i,f);}
+VKAPI_ATTR VkResult VKAPI_CALL ringSubmit2KHR(VkQueue q,uint32_t n,const VkSubmitInfo2*i,VkFence f){return submit2<true>(q,n,i,f);}
+VKAPI_ATTR void VKAPI_CALL ringCopy2(VkCommandBuffer c,const VkCopyBufferInfo2*i){copy2<false>(c,i);}
+VKAPI_ATTR void VKAPI_CALL ringCopy2KHR(VkCommandBuffer c,const VkCopyBufferInfo2*i){copy2<true>(c,i);}
+VKAPI_ATTR void VKAPI_CALL ringImage2(VkCommandBuffer c,const VkCopyBufferToImageInfo2*i){image2<false>(c,i);}
+VKAPI_ATTR void VKAPI_CALL ringImage2KHR(VkCommandBuffer c,const VkCopyBufferToImageInfo2*i){image2<true>(c,i);}
 VKAPI_ATTR VkResult VKAPI_CALL ringSubmit(VkQueue q,uint32_t n,const VkSubmitInfo*i,VkFence f){
  auto d=commandDevice(q);auto h=ringDevice(key(q));bool touched=d.ring&&d.ring->touches(n,i);
  VkFence completion=VK_NULL_HANDLE;
@@ -180,7 +188,7 @@ PFN_vkVoidFunction observationHook(const char*n){
  #define OBS(name,fn) if(!std::strcmp(n,name))return reinterpret_cast<PFN_vkVoidFunction>(fn)
  if(policy.transferRing){
  OBS("vkCreateBuffer",ringCreateBuffer);OBS("vkBindBufferMemory",ringBindBuffer);OBS("vkMapMemory",ringMap);OBS("vkDestroyBuffer",ringDestroyBuffer);OBS("vkUnmapMemory",ringUnmap);
- OBS("vkFreeMemory",ringFreeMemory);OBS("vkQueueSubmit2",ringSubmit2);OBS("vkQueueSubmit2KHR",ringSubmit2);OBS("vkCmdCopyBuffer2",ringCopy2);OBS("vkCmdCopyBuffer2KHR",ringCopy2);OBS("vkCmdCopyBufferToImage2",ringImage2);OBS("vkCmdCopyBufferToImage2KHR",ringImage2);
+ OBS("vkFreeMemory",ringFreeMemory);OBS("vkQueueSubmit2",ringSubmit2);OBS("vkQueueSubmit2KHR",ringSubmit2KHR);OBS("vkCmdCopyBuffer2",ringCopy2);OBS("vkCmdCopyBuffer2KHR",ringCopy2KHR);OBS("vkCmdCopyBufferToImage2",ringImage2);OBS("vkCmdCopyBufferToImage2KHR",ringImage2KHR);
  OBS("vkAllocateCommandBuffers",ringAllocateCommands);OBS("vkFreeCommandBuffers",ringFreeCommands);OBS("vkResetCommandBuffer",ringResetCommands);OBS("vkResetCommandPool",ringResetCommandPool);OBS("vkDestroyCommandPool",ringDestroyCommandPool);
  OBS("vkBeginCommandBuffer",ringBegin);OBS("vkEndCommandBuffer",ringEnd);OBS("vkCmdCopyBuffer",ringCopy);OBS("vkCmdCopyBufferToImage",ringImage);OBS("vkQueueSubmit",ringSubmit);OBS("vkCmdExecuteCommands",ringExecute);
  }
@@ -236,8 +244,9 @@ extern "C" {
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL patchGDPA(VkDevice d,const char*n){
  if(!std::strcmp(n,"vkGetDeviceProcAddr"))return reinterpret_cast<PFN_vkVoidFunction>(patchGDPA);
  if(!std::strcmp(n,"vkDestroyDevice"))return reinterpret_cast<PFN_vkVoidFunction>(destroyDevice);
- if(auto hook=observationHook(n))return hook;
- return d?deviceFor(d).gdpa(d,n):nullptr;
+ auto next=d?deviceFor(d).gdpa(d,n):nullptr;
+ if(next)if(auto hook=observationHook(n))return hook;
+ return next;
 }
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL patchGIPA(VkInstance h,const char*n){
  if(!std::strcmp(n,"vkGetInstanceProcAddr"))return reinterpret_cast<PFN_vkVoidFunction>(patchGIPA);
@@ -246,9 +255,11 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL patchGIPA(VkInstance h,const char*n){
  if(!std::strcmp(n,"vkCreateInstance"))return reinterpret_cast<PFN_vkVoidFunction>(createInstance);
  if(!std::strcmp(n,"vkDestroyInstance"))return reinterpret_cast<PFN_vkVoidFunction>(destroyInstance);
  if(!std::strcmp(n,"vkCreateDevice"))return reinterpret_cast<PFN_vkVoidFunction>(createDevice);
- if(auto hook=observationHook(n))return hook;
  if(!h)return nullptr;
- Instance s;{std::lock_guard<std::mutex>lock(mutex);s=instances.at(key(h));}return s.gipa(h,n);
+ Instance s;{std::lock_guard<std::mutex>lock(mutex);s=instances.at(key(h));}
+ auto next=s.gipa(h,n);
+ if(next)if(auto hook=observationHook(n))return hook;
+ return next;
 }
 __attribute__((visibility("default"))) VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface*v){
  if(v->loaderLayerInterfaceVersion>2)v->loaderLayerInterfaceVersion=2;
