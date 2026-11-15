@@ -12,11 +12,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "subprocess.hpp"
+#include "gpu_inventory.hpp"
 #include "third_party/nlohmann/json.hpp"
 
 namespace gpuLaunch {
 using Environment=std::map<std::string,std::string>;
-struct Plan {std::string name,selector,ids,driver;bool nvidia=false;};
+struct Plan {std::string name,selector,ids,driver;bool nvidia=false;bool systemDrivers=false;std::string discovery;};
 inline std::string pciSelector(const nlohmann::json&gpu){
  if(!gpu.value("has_pci",false))return {};
  auto domain=gpu.value("pci_domain",0u),bus=gpu.value("pci_bus",0u),device=gpu.value("pci_device",0u),function=gpu.value("pci_function",0u);
@@ -25,27 +26,43 @@ inline std::string pciSelector(const nlohmann::json&gpu){
 }
 inline Plan plan(const nlohmann::json&inventory){
  if(!inventory.contains("devices")||!inventory["devices"].is_array())throw std::runtime_error("Invalid GPU inventory");
- std::vector<Plan>discrete,other;
+ std::vector<Plan>discrete;
  for(const auto&gpu:inventory["devices"]){
-  auto type=gpu.value("type",4);if(type==4)continue; // Never select software rendering.
+  if(gpu.value("type",-1)!=2)continue; // Only VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU.
   char ids[32];snprintf(ids,sizeof(ids),"%04x:%04x",gpu.value("vendor",0u),gpu.value("device",0u));
   Plan p{gpu.value("name",std::string("GPU")),pciSelector(gpu),ids,gpu.value("driver_name",std::string()),gpu.value("driver_id",0)==4}; // VK_DRIVER_ID_NVIDIA_PROPRIETARY
   if(p.selector.empty())p.selector=p.ids;
-  (type==2?discrete:other).push_back(p);
+  discrete.push_back(p);
  }
- auto&candidates=discrete.empty()?other:discrete;
- if(candidates.empty())throw std::runtime_error("No hardware Vulkan GPU available for rendering");
+ auto&candidates=discrete;
+ if(candidates.empty())throw std::runtime_error("No discrete Vulkan GPU is visible. Refusing to render on an integrated or software GPU");
  // Stable selection for multi-dGPU systems; prefer a caller's explicit discrete
  // PCI/device selector when supplied. No model/vendor preference is imposed.
  std::sort(candidates.begin(),candidates.end(),[](const Plan&a,const Plan&b){return a.selector<b.selector;});
- if(const char*requested=getenv("DRI_PRIME"))for(const auto&p:candidates)if(p.selector==requested||p.ids==requested)return p;
+ if(const char*requested=getenv("DRI_PRIME")){
+  std::string selector=requested;if(!selector.empty()&&selector.back()=='!')selector.pop_back();
+  for(const auto&p:candidates)if(p.selector==selector||p.ids==selector)return p;
+  if(selector.rfind("pci-",0)==0||selector.find(':')!=std::string::npos)
+   throw std::runtime_error("Requested discrete GPU "+selector+" is not visible; refusing to select a different GPU");
+ }
  return candidates.front();
 }
 inline Plan detect(const std::filesystem::path&probe){
- auto result=boundedCommand({probe.string(),"--gpus"});
- if(result.first)throw std::runtime_error("Cannot discover rendering GPU: "+result.second.substr(0,500));
- try{return plan(nlohmann::json::parse(result.second));}
- catch(const nlohmann::json::exception&){throw std::runtime_error("GPU discovery returned invalid data: "+result.second.substr(0,500));}
+ std::string failures;
+ for(bool systemDrivers:{false,true}){
+  if(systemDrivers&&!gpuInventory::restricted())break;
+  auto result=boundedCommand({probe.string(),systemDrivers?"--gpus-system":"--gpus"},std::chrono::seconds(15),false);
+  try{
+   if(result.first)throw std::runtime_error("GPU probe failed");
+   auto inventory=nlohmann::json::parse(result.second);auto selected=plan(inventory);
+   selected.systemDrivers=systemDrivers;selected.discovery=inventory.dump();
+   if(systemDrivers)selected.discovery="Inherited driver restriction hid the discrete GPU; using system discovery. Initial attempt: "+failures+" System inventory: "+selected.discovery;
+   return selected;
+  }catch(const std::exception&e){
+   failures+=(systemDrivers?"System discovery: ":"Inherited driver discovery: ")+std::string(e.what())+"; probe exit="+std::to_string(result.first)+"; "+result.second.substr(0,12000)+"\n";
+  }
+ }
+ throw std::runtime_error("Cannot select a discrete rendering GPU; no integrated fallback was used. "+failures);
 }
 inline Environment settings(const Plan&p){
  Environment e{{"DRI_PRIME",p.selector}};
@@ -53,13 +70,15 @@ inline Environment settings(const Plan&p){
  return e;
 }
 inline void apply(const Plan&p){
- for(const char*name:{"MESA_VK_DEVICE_SELECT","MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE","__NV_PRIME_RENDER_OFFLOAD","__VK_LAYER_NV_optimus","__GLX_VENDOR_LIBRARY_NAME","__NV_PRIME_RENDER_OFFLOAD_PROVIDER"})unsetenv(name);
+ if(p.systemDrivers)gpuInventory::clearDrivers();
+ for(auto name:gpuInventory::preferences)unsetenv(name);
  for(const auto&e:settings(p))if(setenv(e.first.c_str(),e.second.c_str(),1))throw std::runtime_error("Cannot set GPU launch environment");
 }
 inline bool compatible(const Environment&e,const Plan&p){
  auto get=[&](const char*name){auto i=e.find(name);return i==e.end()?std::string():i->second;};
+ if(p.systemDrivers)for(auto name:gpuInventory::driverOverrides)if(!get(name).empty())return false;
  const bool target=get("DRI_PRIME")==p.selector||get("DRI_PRIME")==p.ids;
- if(!target||!get("MESA_VK_DEVICE_SELECT").empty()||!get("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE").empty()||!get("__NV_PRIME_RENDER_OFFLOAD_PROVIDER").empty())return false;
+ if(!target||!get("VK_LOADER_DEVICE_SELECT").empty()||!get("NODEVICE_SELECT").empty()||!get("MESA_VK_DEVICE_SELECT").empty()||!get("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE").empty()||!get("__NV_PRIME_RENDER_OFFLOAD_PROVIDER").empty())return false;
  if(p.nvidia)return get("__NV_PRIME_RENDER_OFFLOAD")=="1"&&get("__VK_LAYER_NV_optimus")=="NVIDIA_only"&&get("__GLX_VENDOR_LIBRARY_NAME")=="nvidia";
  // Numeric DRI_PRIME=1 does not identify a physical GPU and is not sufficient.
  return get("__GLX_VENDOR_LIBRARY_NAME")!="nvidia"&&get("__NV_PRIME_RENDER_OFFLOAD")!="1"&&get("__VK_LAYER_NV_optimus").empty();

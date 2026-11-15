@@ -16,14 +16,14 @@
 // deadlock on a full pipe. A process group also covers inherited pipes in children.
 inline std::pair<int,std::string> boundedCommand(
     const std::vector<std::string>& args,
-    std::chrono::milliseconds timeout=std::chrono::seconds(15)) {
+    std::chrono::milliseconds timeout=std::chrono::seconds(15),bool captureStderr=true) {
     if(args.empty()||timeout.count()<0)throw std::runtime_error("Invalid probe command");
     std::vector<char*> argv;for(const auto&arg:args)argv.push_back(const_cast<char*>(arg.c_str()));argv.push_back(nullptr);
     int pipefd[2];if(pipe2(pipefd,O_CLOEXEC))throw std::runtime_error("Probe pipe failed");
     if(fcntl(pipefd[0],F_SETFL,O_NONBLOCK)<0){close(pipefd[0]);close(pipefd[1]);throw std::runtime_error("Probe pipe setup failed");}
     const pid_t pid=fork();
     if(pid==0){
-        setpgid(0,0);dup2(pipefd[1],STDOUT_FILENO);dup2(pipefd[1],STDERR_FILENO);
+        setpgid(0,0);dup2(pipefd[1],STDOUT_FILENO);if(captureStderr)dup2(pipefd[1],STDERR_FILENO);
         close(pipefd[0]);close(pipefd[1]);execvp(argv[0],argv.data());_exit(127);
     }
     close(pipefd[1]);if(pid<0){close(pipefd[0]);throw std::runtime_error("Probe fork failed");}
