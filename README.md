@@ -4,7 +4,7 @@ Run SteamVR on a laptop’s discrete GPU when the headset’s display connector 
 
 The bridge renders SteamVR’s final image in discrete-GPU memory, copies the completed image into an exportable scanout buffer, and presents that buffer through the display-owning GPU’s DRM lease. The display GPU does not render the scene. Resolution, refresh rate and game quality remain unchanged.
 
-This package contains the accepted minimal bridge and a **separate SteamVR patchset**. SteamVR is the currently supported runtime. Keep your headset’s existing SteamVR driver: the bridge does not replace its USB or tracking support and does not require Oasis. The tested WMR setup uses Oasis. Development and headset testing use Mesa, Wayland and a Lenovo Explorer; other GPU/driver combinations need compatible Vulkan, DMA-BUF, synchronization and DRM-leasing support. Universal hardware compatibility and the 0.1 ms added-latency target have not been demonstrated.
+This package contains the bridge and a separate SteamVR patchset. SteamVR is the currently supported runtime. The tested WMR setup uses the Oasis driver. Development and headset testing use Mesa, COSMIC Wayland desktop and a Lenovo Explorer WMR headset; other GPU/driver combinations need compatible Vulkan, DMA-BUF, synchronization and DRM-leasing support.
 
 ## Install
 
@@ -25,14 +25,6 @@ Start Steam on the discrete GPU:
 
 Start SteamVR from your library and launch games normally. You may instead start Steam using `DRI_PRIME=1 steam`; the installed SteamVR launch option activates the bridge. Fully quit an existing Steam session before changing its GPU environment.
 
-For a system using NVIDIA’s driver, fully quit Steam and use its offload variables as well:
-
-```sh
-__NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only __GLX_VENDOR_LIBRARY_NAME=nvidia ~/.local/bin/wmr-gpu-bridge --steam
-```
-
-These variables are inherited by Steam and its children. Intel/NVIDIA interoperability remains unvalidated; a successful installation alone does not establish headset compatibility.
-
 The installed launcher can also wrap a command directly:
 
 ```sh
@@ -45,7 +37,7 @@ The `wmr-gpu-bridge` filename and installation receipt paths remain stable for c
 
 When the bridge creates its VR render device, it detects the selected dGPU from Vulkan's DRM properties and requests the driver's named `VR` workload profile, if available. It reads the profile ID from the driver; GPU models, PCI addresses and profile numbers are not hardcoded. It changes no resolution, refresh rate, image quality, frequency limit, power limit or fan setting.
 
-The bundled `muxless-vr-profile` helper needs one-time administrator authorization during `--install` because Linux restricts these driver controls. After opening the validated control, it permanently drops root privileges. A native, unprivileged lease service shares the setting across contexts/processes and restores the previous profile after the last VR client exits, including a compositor crash. It has no per-frame work and does not require GameMode, LACT or Python at runtime. Its files remain within the existing uninstall ownership scope.
+The bundled `muxless-vr-profile` helper needs one-time administrator authorization during `--install` because Linux restricts these driver controls. After opening the validated control, it permanently drops root privileges. A native, unprivileged lease service shares the setting across contexts/processes and restores the previous profile after the last VR client exits, including a compositor crash. Its files remain within the existing uninstall ownership scope.
 
 AMD's `amdgpu` driver exposes this named profile and is tested on the RX 6800M. The researched NVIDIA and Intel Linux interfaces do not expose an equivalent named VR mode: they are left unchanged. Maximum-performance, fixed-clock, compute and inference modes are not silently substituted. Public beta testing should report unsupported or failed capabilities as such. A user-selected custom profile is preserved.
 
