@@ -11,7 +11,7 @@ podman run --rm --security-opt label=disable -v "$PWD:/work:rw" \
  mkdir -p shim/build-portable
  flags="-std=c++17 -O2 -static-libstdc++ -static-libgcc"
  g++ $flags -O3 -DNDEBUG -shared -fPIC -fvisibility=hidden -Wl,--exclude-libs,ALL -Wl,--no-undefined -I/headers -DVK_NO_PROTOTYPES src/layer.cpp -o shim/build-portable/libmuxless_vr_bridge.so -pthread -ldl $(pkg-config --cflags --libs libdrm) -lstdc++fs
- g++ $flags -shared -fPIC -fvisibility=hidden -Wl,--exclude-libs,ALL -Wl,--no-undefined -I/headers patches/steamvr/layer.cpp -o shim/build-portable/libsteamvr_runtime_patches.so -pthread
+ g++ $flags -shared -fPIC -fvisibility=hidden -Wl,--exclude-libs,ALL -Wl,--no-undefined -I/headers patches/steamvr/layer.cpp -o shim/build-portable/libsteamvr_runtime_patches.so -pthread -Wl,-z,nodelete
  g++ $flags runtime/profile_helper.cpp -o shim/build-portable/muxless-vr-profile -lstdc++fs
  g++ $flags shim/launcher.cpp -o shim/build-portable/wmr-gpu-bridge -lstdc++fs
  g++ $flags shim/appimage/manager.cpp -o shim/build-portable/muxless-vr-bridge-manager -ldl -lstdc++fs

@@ -17,6 +17,7 @@
 #include "tested_build.hpp"
 #include "descriptor_arena.hpp"
 #include "transfer_ring.hpp"
+#include "native_upload.hpp"
 namespace {
 struct Instance {VkInstance handle;PFN_vkGetInstanceProcAddr gipa;};
 struct Device {PFN_vkGetDeviceProcAddr gdpa;PFN_vkCreateDescriptorPool createPool;PFN_vkDestroyDevice destroy;std::shared_ptr<DescriptorArena> arena{};std::shared_ptr<TransferRing> ring{};};
@@ -145,10 +146,15 @@ std::unordered_map<void*,VkDevice> deviceHandles;
 VkDevice ringDevice(void*k){std::lock_guard<std::mutex>g(mutex);return deviceHandles.at(k);}
 VKAPI_ATTR VkResult VKAPI_CALL ringCreateBuffer(VkDevice h,const VkBufferCreateInfo*c,const VkAllocationCallbacks*a,VkBuffer*out){auto d=deviceFor(h);auto r=ringNext<PFN_vkCreateBuffer>(d,h,"vkCreateBuffer")(h,c,a,out);if(r==VK_SUCCESS&&d.ring)d.ring->created(*out,*c);return r;}
 VKAPI_ATTR VkResult VKAPI_CALL ringBindBuffer(VkDevice h,VkBuffer b,VkDeviceMemory m,VkDeviceSize o){auto d=deviceFor(h);auto r=ringNext<PFN_vkBindBufferMemory>(d,h,"vkBindBufferMemory")(h,b,m,o);if(r==VK_SUCCESS&&d.ring)d.ring->bound(b,m,o);return r;}
-VKAPI_ATTR VkResult VKAPI_CALL ringMap(VkDevice h,VkDeviceMemory m,VkDeviceSize o,VkDeviceSize z,VkMemoryMapFlags f,void**out){auto d=deviceFor(h);auto r=ringNext<PFN_vkMapMemory>(d,h,"vkMapMemory")(h,m,o,z,f,out);if(r==VK_SUCCESS&&d.ring)d.ring->mapped(m,o,z,out);return r;}
+VKAPI_ATTR VkResult VKAPI_CALL ringMap(VkDevice h,VkDeviceMemory m,VkDeviceSize o,VkDeviceSize z,VkMemoryMapFlags f,void**out){auto d=deviceFor(h);auto r=ringNext<PFN_vkMapMemory>(d,h,"vkMapMemory")(h,m,o,z,f,out);if(r==VK_SUCCESS&&d.ring){if(d.ring->mapped(m,o,z,out)&&buildPolicy().nativeUploads)nativeUpload::track(reinterpret_cast<uintptr_t>(out),d.ring);}return r;}
 VKAPI_ATTR void VKAPI_CALL ringDestroyBuffer(VkDevice h,VkBuffer b,const VkAllocationCallbacks*a){auto d=deviceFor(h);if(d.ring)d.ring->destroyed(b);ringNext<PFN_vkDestroyBuffer>(d,h,"vkDestroyBuffer")(h,b,a);}
 VKAPI_ATTR void VKAPI_CALL ringUnmap(VkDevice h,VkDeviceMemory m){auto d=deviceFor(h);if(d.ring)d.ring->unmapped(m);ringNext<PFN_vkUnmapMemory>(d,h,"vkUnmapMemory")(h,m);}
-VKAPI_ATTR VkResult VKAPI_CALL ringBegin(VkCommandBuffer c,const VkCommandBufferBeginInfo*i){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->begin(c);return ringNext<PFN_vkBeginCommandBuffer>(d,h,"vkBeginCommandBuffer")(c,i);}
+VKAPI_ATTR VkResult VKAPI_CALL ringBegin(VkCommandBuffer c,const VkCommandBufferBeginInfo*i){auto d=commandDevice(c);auto h=ringDevice(key(c));auto r=ringNext<PFN_vkBeginCommandBuffer>(d,h,"vkBeginCommandBuffer")(c,i);if(r==VK_SUCCESS&&d.ring)d.ring->begin(c);return r;}
+VKAPI_ATTR VkResult VKAPI_CALL ringAllocateCommands(VkDevice h,const VkCommandBufferAllocateInfo*i,VkCommandBuffer*out){auto d=deviceFor(h);auto r=ringNext<PFN_vkAllocateCommandBuffers>(d,h,"vkAllocateCommandBuffers")(h,i,out);if(r==VK_SUCCESS&&d.ring)d.ring->allocated(i->commandPool,i->commandBufferCount,out);return r;}
+VKAPI_ATTR void VKAPI_CALL ringFreeCommands(VkDevice h,VkCommandPool pool,uint32_t n,const VkCommandBuffer*c){auto d=deviceFor(h);ringNext<PFN_vkFreeCommandBuffers>(d,h,"vkFreeCommandBuffers")(h,pool,n,c);if(d.ring)d.ring->discarded(n,c,true);}
+VKAPI_ATTR VkResult VKAPI_CALL ringResetCommands(VkCommandBuffer c,VkCommandBufferResetFlags flags){auto d=commandDevice(c);auto h=ringDevice(key(c));auto r=ringNext<PFN_vkResetCommandBuffer>(d,h,"vkResetCommandBuffer")(c,flags);if(r==VK_SUCCESS&&d.ring)d.ring->discarded(1,&c);return r;}
+VKAPI_ATTR VkResult VKAPI_CALL ringResetCommandPool(VkDevice h,VkCommandPool p,VkCommandPoolResetFlags flags){auto d=deviceFor(h);auto r=ringNext<PFN_vkResetCommandPool>(d,h,"vkResetCommandPool")(h,p,flags);if(r==VK_SUCCESS&&d.ring)d.ring->poolReset(p,false);return r;}
+VKAPI_ATTR void VKAPI_CALL ringDestroyCommandPool(VkDevice h,VkCommandPool p,const VkAllocationCallbacks*a){auto d=deviceFor(h);ringNext<PFN_vkDestroyCommandPool>(d,h,"vkDestroyCommandPool")(h,p,a);if(d.ring)d.ring->poolReset(p,true);}
 VKAPI_ATTR VkResult VKAPI_CALL ringEnd(VkCommandBuffer c){auto d=commandDevice(c);auto h=ringDevice(key(c));auto r=ringNext<PFN_vkEndCommandBuffer>(d,h,"vkEndCommandBuffer")(c);if(r==VK_SUCCESS&&d.ring)d.ring->ended(c);return r;}
 VKAPI_ATTR void VKAPI_CALL ringCopy(VkCommandBuffer c,VkBuffer src,VkBuffer dst,uint32_t n,const VkBufferCopy*r){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)for(uint32_t i=0;i<n;i++)d.ring->copy(c,src,r[i].srcOffset>UINT64_MAX-r[i].size?UINT64_MAX:r[i].srcOffset+r[i].size);ringNext<PFN_vkCmdCopyBuffer>(d,h,"vkCmdCopyBuffer")(c,src,dst,n,r);}
 VKAPI_ATTR void VKAPI_CALL ringImage(VkCommandBuffer c,VkBuffer src,VkImage dst,VkImageLayout l,uint32_t n,const VkBufferImageCopy*r){auto d=commandDevice(c);auto h=ringDevice(key(c));if(d.ring)d.ring->copy(c,src,UINT64_MAX);ringNext<PFN_vkCmdCopyBufferToImage>(d,h,"vkCmdCopyBufferToImage")(c,src,dst,l,n,r);}
@@ -175,6 +181,7 @@ PFN_vkVoidFunction observationHook(const char*n){
  if(policy.transferRing){
  OBS("vkCreateBuffer",ringCreateBuffer);OBS("vkBindBufferMemory",ringBindBuffer);OBS("vkMapMemory",ringMap);OBS("vkDestroyBuffer",ringDestroyBuffer);OBS("vkUnmapMemory",ringUnmap);
  OBS("vkFreeMemory",ringFreeMemory);OBS("vkQueueSubmit2",ringSubmit2);OBS("vkQueueSubmit2KHR",ringSubmit2);OBS("vkCmdCopyBuffer2",ringCopy2);OBS("vkCmdCopyBuffer2KHR",ringCopy2);OBS("vkCmdCopyBufferToImage2",ringImage2);OBS("vkCmdCopyBufferToImage2KHR",ringImage2);
+ OBS("vkAllocateCommandBuffers",ringAllocateCommands);OBS("vkFreeCommandBuffers",ringFreeCommands);OBS("vkResetCommandBuffer",ringResetCommands);OBS("vkResetCommandPool",ringResetCommandPool);OBS("vkDestroyCommandPool",ringDestroyCommandPool);
  OBS("vkBeginCommandBuffer",ringBegin);OBS("vkEndCommandBuffer",ringEnd);OBS("vkCmdCopyBuffer",ringCopy);OBS("vkCmdCopyBufferToImage",ringImage);OBS("vkQueueSubmit",ringSubmit);OBS("vkCmdExecuteCommands",ringExecute);
  }
  if(policy.descriptors){
@@ -184,7 +191,7 @@ PFN_vkVoidFunction observationHook(const char*n){
  #undef OBS
  return nullptr;
 }
-VKAPI_ATTR void VKAPI_CALL destroyDevice(VkDevice d,const VkAllocationCallbacks*a){auto state=deviceFor(d);auto next=state.destroy;ShaderAdapter::cleanup(d);if(state.ring)state.ring->cleanup();{std::lock_guard<std::mutex>lock(mutex);devices.erase(key(d));usage.erase(key(d));deviceHandles.erase(key(d));}next(d,a);}
+VKAPI_ATTR void VKAPI_CALL destroyDevice(VkDevice d,const VkAllocationCallbacks*a){auto state=deviceFor(d);auto next=state.destroy;ShaderAdapter::cleanup(d);if(state.ring){nativeUpload::forget(state.ring);state.ring->cleanup();}{std::lock_guard<std::mutex>lock(mutex);devices.erase(key(d));usage.erase(key(d));deviceHandles.erase(key(d));}next(d,a);}
 VKAPI_ATTR void VKAPI_CALL destroyInstance(VkInstance h,const VkAllocationCallbacks*a){
  Instance state;{std::lock_guard<std::mutex>lock(mutex);state=instances.at(key(h));instances.erase(key(h));}
  reinterpret_cast<PFN_vkDestroyInstance>(state.gipa(h,"vkDestroyInstance"))(h,a);
@@ -212,7 +219,11 @@ VKAPI_ATTR VkResult VKAPI_CALL createDevice(VkPhysicalDevice h,const VkDeviceCre
   if(buildPolicy().transferRing){
    std::string dir=patchConfigDirectory();
    std::ifstream enabled(dir+"/transfer-ring.enabled");std::string value;std::getline(enabled,value);
-   if(value=="1")d.ring=std::make_shared<TransferRing>(TransferRing::Driver{*out,gdpa});
+   if(value=="1"){
+    VkPhysicalDeviceMemoryProperties memory{};reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(gipa(state.handle,"vkGetPhysicalDeviceMemoryProperties"))(h,&memory);
+    d.ring=std::make_shared<TransferRing>(TransferRing::Driver{*out,gdpa,memory});
+    if(buildPolicy().nativeUploads&&!nativeUpload::install())std::fprintf(stderr,"STEAMVR_RING native spill unavailable; legacy retirement only\n");
+   }
   }
   if(buildPolicy().shader&&ShaderAdapter::enabled()){
    try{ShaderAdapter::registerDevice(*out,gdpa);}catch(const std::bad_alloc&){d.destroy(*out,a);*out=VK_NULL_HANDLE;return VK_ERROR_OUT_OF_HOST_MEMORY;}
