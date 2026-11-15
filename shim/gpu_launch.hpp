@@ -64,14 +64,24 @@ inline bool compatible(const Environment&e,const Plan&p){
  // Numeric DRI_PRIME=1 does not identify a physical GPU and is not sufficient.
  return get("__GLX_VENDOR_LIBRARY_NAME")!="nvidia"&&get("__NV_PRIME_RENDER_OFFLOAD")!="1"&&get("__VK_LAYER_NV_optimus").empty();
 }
+// SteamVR changes its main-thread comm. argv[0] still identifies the executable.
+inline bool processNamed(const std::filesystem::path& dir,const std::string& wanted){
+ std::ifstream nameFile(dir/"comm");std::string name;std::getline(nameFile,name);
+ if(name==wanted)return true;
+ std::ifstream command(dir/"cmdline",std::ios::binary);std::string executable;std::getline(command,executable,'\0');
+ return !executable.empty()&&std::filesystem::path(executable).filename()==wanted;
+}
+inline bool zombieProcess(const std::filesystem::path& dir){
+ std::ifstream statFile(dir/"stat");std::string status;std::getline(statFile,status);auto close=status.rfind(')');
+ return close!=std::string::npos&&status.size()>close+2&&status[close+2]=='Z';
+}
 struct SteamProcess {std::string pid;bool dgpu;};
 inline std::vector<SteamProcess> steamProcesses(const Plan&p,const std::filesystem::path&proc="/proc"){
  std::vector<SteamProcess>result;std::error_code error;
  for(const auto&entry:std::filesystem::directory_iterator(proc,error)){
   auto pid=entry.path().filename().string();if(pid.empty()||pid.find_first_not_of("0123456789")!=std::string::npos)continue;
   struct stat owner{};if(stat(entry.path().c_str(),&owner)||owner.st_uid!=getuid())continue;
-  std::ifstream nameFile(entry.path()/"comm");std::string name;std::getline(nameFile,name);if(name!="steam")continue;
-  std::ifstream statFile(entry.path()/"stat");std::string status;std::getline(statFile,status);auto close=status.rfind(')');if(close!=std::string::npos&&status.size()>close+2&&status[close+2]=='Z')continue;
+  if(!processNamed(entry.path(),"steam")||zombieProcess(entry.path()))continue;
   std::ifstream environment(entry.path()/"environ",std::ios::binary);std::string variable;Environment values;
   while(std::getline(environment,variable,'\0')){auto equal=variable.find('=');if(equal!=std::string::npos)values[variable.substr(0,equal)]=variable.substr(equal+1);}
   result.push_back({pid,compatible(values,p)});

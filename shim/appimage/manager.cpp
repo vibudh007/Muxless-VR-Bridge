@@ -22,6 +22,7 @@
 #include "../../runtime/vr_profile.hpp"
 #include "../config_text.hpp"
 #include "../gpu_launch.hpp"
+#include "../steam_launch.hpp"
 #include "../subprocess.hpp"
 #include "../third_party/nlohmann/json.hpp"
 #include "../third_party/picosha2/picosha2.h"
@@ -39,7 +40,7 @@ static void write(const fs::path&p,const std::string&data){fs::create_directorie
 static std::string digest(const fs::path&p){std::ifstream f(p,std::ios::binary);if(!f)throw std::runtime_error("Cannot hash "+p.string());return picosha2::hash256_hex_string(std::istreambuf_iterator<char>(f),std::istreambuf_iterator<char>());}
 static void copyManaged(const fs::path&from,const fs::path&to){fs::create_directories(to.parent_path());auto tmp=to;tmp+=".new-"+std::to_string(getpid());try{fs::copy_file(from,tmp,fs::copy_options::overwrite_existing);fs::permissions(tmp,fs::perms::owner_all|fs::perms::group_read|fs::perms::group_exec|fs::perms::others_read|fs::perms::others_exec);fs::rename(tmp,to);}catch(...){std::error_code ec;fs::remove(tmp,ec);throw;}}
 static std::pair<int,std::string> command(const std::vector<std::string>&args){return boundedCommand(args);}
-static std::vector<int> processes(const std::string&name){std::vector<int>out;std::error_code ec;for(auto&e:fs::directory_iterator("/proc",ec)){auto id=e.path().filename().string();if(id.empty()||id.find_first_not_of("0123456789")!=std::string::npos)continue;struct stat st{};if(stat(e.path().c_str(),&st)||st.st_uid!=getuid())continue;auto value=read(e.path()/"comm");if(value==name+"\n")out.push_back(std::stoi(id));}return out;}
+static std::vector<int> processes(const std::string&name,const fs::path&proc="/proc"){std::vector<int>out;std::error_code ec;for(auto&e:fs::directory_iterator(proc,ec)){auto id=e.path().filename().string();if(id.empty()||id.find_first_not_of("0123456789")!=std::string::npos)continue;struct stat st{};if(stat(e.path().c_str(),&st)||st.st_uid!=getuid())continue;if(gpuLaunch::processNamed(e.path(),name)&&!gpuLaunch::zombieProcess(e.path()))out.push_back(std::stoi(id));}return out;}
 static std::vector<std::string> lex(const std::string&s){std::vector<std::string>v;size_t i=0;while(i<s.size()){if(isspace((unsigned char)s[i])){i++;continue;}if(s[i]=='/'&&i+1<s.size()&&s[i+1]=='/'){while(i<s.size()&&s[i]!='\n')i++;continue;}if(s[i]=='{'||s[i]=='}'){v.push_back(s.substr(i++,1));continue;}std::string t;if(s[i]=='"'){i++;while(i<s.size()&&s[i]!='"'){if(s[i]=='\\'&&i+1<s.size())i++;t+=s[i++];}if(i<s.size())i++;}else{while(i<s.size()&&!isspace((unsigned char)s[i])&&s[i]!='{'&&s[i]!='}')t+=s[i++];}v.push_back(t);}return v;}
 static json parseVdf(const std::vector<std::string>&v,size_t&i){json o=json::object();while(i<v.size()){if(v[i]=="}"){i++;break;}auto key=v[i++];if(i>=v.size())break;if(v[i]=="{"){i++;o[key]=parseVdf(v,i);}else o[key]=v[i++];}return o;}
 static json vdf(const fs::path&p){auto tokens=lex(read(p));size_t index=0;return parseVdf(tokens,index);}
@@ -113,24 +114,72 @@ static json doctor(){auto d=discover();json r={{"schema",1},{"version",MUXLESS_V
  return r;
 }
 static std::vector<fs::path> runs(){std::vector<fs::path>v;std::error_code ec;if(!fs::exists(state()/"runs"))return v;for(auto&e:fs::directory_iterator(state()/"runs",ec))if(e.is_directory()&&!e.is_symlink()&&fs::exists(e.path()/"run.json"))v.push_back(e.path());std::sort(v.begin(),v.end(),[](const fs::path&a,const fs::path&b){return fs::last_write_time(a/"run.json")>fs::last_write_time(b/"run.json");});return v;}
-static json runtimeStatus(){
- auto list=runs();bool loaded=false;int pid=0;
- for(int candidate:processes("vrcompositor")){
-  auto maps=read(fs::path("/proc")/std::to_string(candidate)/"maps");
+static json runtimeStatus(const fs::path&proc="/proc"){
+ auto list=runs();auto candidates=processes("vrcompositor",proc);bool loaded=false,unreadable=false;int pid=0;
+ for(int candidate:candidates){
+  std::ifstream file(proc/std::to_string(candidate)/"maps");
+  if(!file){unreadable=true;if(!pid)pid=candidate;continue;}
+  std::string maps(std::istreambuf_iterator<char>(file),{});
   if(maps.find("/lib/wmr-gpu-bridge/")!=std::string::npos&&maps.find("libmuxless_vr_bridge.so")!=std::string::npos){loaded=true;pid=candidate;break;}
+  if(!pid)pid=candidate;
  }
- return {{"state",loaded?"loaded":"unverified"},{"pid",pid},{"session",list.empty()?"":list[0].string()},
-         {"detail",loaded?"Managed bridge mapped in vrcompositor; this alone does not verify live scanout":"No running compositor with the installed bridge was found"}};
+ std::string status=loaded?"loaded":candidates.empty()?"not_running":unreadable?"unverified":"not_loaded";
+ std::string detail=loaded?"Managed bridge mapped in vrcompositor; this alone does not verify live scanout":
+  candidates.empty()?"SteamVR compositor is not running; start SteamVR and retry --verify --runtime":
+  unreadable?"Compositor found, but Linux did not allow its mappings to be read; bridge loading is unverified":
+  "Compositor found, but the installed bridge is not mapped; check SteamVR launch integration";
+ return {{"state",status},{"pid",pid},{"session",list.empty()?"":list[0].string()},{"detail",detail}};
 }
+
 static bool under(const fs::path&p,const fs::path&root){auto relative=fs::weakly_canonical(p).lexically_relative(fs::weakly_canonical(root));return !relative.empty()&&*relative.begin()!="..";}
 static bool verifyPayload(){auto root=appDir();auto payload=readJson(root/"payload.json");if(!payload.contains("files"))throw std::runtime_error("Payload manifest missing; use the AppImage to install");for(auto&file:payload["files"]){auto path=root/file["path"].get<std::string>();if(!under(path,root)||digest(path)!=file["sha256"].get<std::string>())throw std::runtime_error("Payload integrity check failed: "+path.string());}return true;}
 
 struct LaunchSlot {size_t start=0,end=0,insert=0;std::string value;bool found=false,app=false;};
+static bool vdfKey(std::string value,const char* key){for(auto&c:value)c=std::tolower(static_cast<unsigned char>(c));return value==key;}
 static LaunchSlot launchSlot(const std::string&text){
- struct Token{std::string value;size_t start,end;};std::vector<Token>tokens;size_t p=0;
- while(p<text.size()){if(isspace((unsigned char)text[p])){p++;continue;}if(text[p]=='/'&&p+1<text.size()&&text[p+1]=='/'){while(p<text.size()&&text[p]!='\n')p++;continue;}size_t start=p;std::string value;if(text[p]=='{'||text[p]=='}')value=text.substr(p++,1);else if(text[p]=='"'){p++;while(p<text.size()&&text[p]!='"'){if(text[p]=='\\'&&p+1<text.size())p++;value+=text[p++];}if(p<text.size())p++;}else{while(p<text.size()&&!isspace((unsigned char)text[p])&&text[p]!='{'&&text[p]!='}')value+=text[p++];}tokens.push_back({value,start,p});}
- LaunchSlot result;size_t i=0;std::function<void(std::vector<std::string>)>walk=[&](std::vector<std::string>path){bool app=path.size()>1&&path.back()=="250820"&&path[path.size()-2]=="apps";while(i<tokens.size()){if(tokens[i].value=="}"){if(app){result.app=true;result.insert=tokens[i].start;}i++;return;}std::string key=tokens[i++].value;if(i>=tokens.size())return;if(tokens[i].value=="{"){i++;auto child=path;child.push_back(key);walk(child);}else{if(app&&key=="LaunchOptions"){result.start=tokens[i].start;result.end=tokens[i].end;result.value=tokens[i].value;result.found=true;}i++;}}};walk({});return result;
+ struct Token{std::string value;size_t start,end;bool brace=false;};std::vector<Token>tokens;size_t p=0;
+ while(p<text.size()){
+  if(isspace(static_cast<unsigned char>(text[p]))){++p;continue;}
+  if(text[p]=='/'&&p+1<text.size()&&text[p+1]=='/'){while(p<text.size()&&text[p]!='\n')++p;continue;}
+  size_t start=p;std::string value;bool brace=text[p]=='{'||text[p]=='}';
+  if(brace)value=text.substr(p++,1);
+  else if(text[p]=='"'){
+   ++p;
+   while(p<text.size()&&text[p]!='"'){
+    if(text[p]=='\\'){
+     if(++p==text.size())throw std::runtime_error("Truncated Steam profile escape");
+     char c=text[p++];value+=c=='n'?'\n':c=='r'?'\r':c=='t'?'\t':c;
+    }else value+=text[p++];
+   }
+   if(p==text.size())throw std::runtime_error("Unclosed quote in Steam profile; no launch options written");
+   ++p;
+  }else while(p<text.size()&&!isspace(static_cast<unsigned char>(text[p]))&&text[p]!='{'&&text[p]!='}')value+=text[p++];
+  tokens.push_back({value,start,p,brace});
+ }
+ LaunchSlot result;size_t i=0;
+ std::function<void(std::vector<std::string>)>walk=[&](std::vector<std::string>path){
+  bool app=path.size()>1&&path.back()=="250820"&&vdfKey(path[path.size()-2],"apps");
+  while(i<tokens.size()){
+   if(tokens[i].brace){
+    if(tokens[i].value!="}"||path.empty())throw std::runtime_error("Unexpected brace in Steam profile");
+    if(app){result.app=true;result.insert=tokens[i].start;}
+    ++i;return;
+   }
+   std::string key=tokens[i++].value;
+   if(i==tokens.size())throw std::runtime_error("Missing Steam profile value");
+   if(tokens[i].brace){
+    if(tokens[i].value!="{")throw std::runtime_error("Missing Steam profile value before closing brace");
+    ++i;auto child=path;child.push_back(key);walk(child);
+   }else{
+    if(app&&vdfKey(key,"launchoptions")){result.start=tokens[i].start;result.end=tokens[i].end;result.value=tokens[i].value;result.found=true;}
+    ++i;
+   }
+  }
+  if(!path.empty())throw std::runtime_error("Unclosed section in Steam profile; no launch options written");
+ };
+ walk({});return result;
 }
+
 static std::vector<fs::path> steamConfigurations(){
  std::vector<fs::path>files;std::set<fs::path>roots;std::error_code ec;
  // Removal discovers Steam profiles independently of runtime/driver JSON.
@@ -142,9 +191,50 @@ static std::string removeWrapper(std::string value,const fs::path&launcher){
  for(auto token:{"\""+launcher.string()+"\"",launcher.string()}){size_t position;while((position=value.find(token))!=std::string::npos){bool left=position==0||isspace((unsigned char)value[position-1]);size_t end=position+token.size();bool right=end==value.size()||isspace((unsigned char)value[end]);if(!left||!right)break;if(end<value.size()&&value[end]==' ')end++;value.erase(position,end-position);}}
  return value;
 }
-static void setLaunch(const fs::path&file,const std::string&value){auto text=read(file);auto slot=launchSlot(text);if(slot.found)text.replace(slot.start,slot.end-slot.start,json(value).dump());else if(slot.app)text.insert(slot.insert,"\t\t\t\t\t\t\"LaunchOptions\"\t\t"+json(value).dump()+"\n\t\t\t\t\t");else throw std::runtime_error("SteamVR profile disappeared");write(file,text);}
+static void setLaunch(const fs::path&file,const std::string&value){
+ auto before=read(file),text=before;auto slot=launchSlot(text);
+ if(slot.found)text.replace(slot.start,slot.end-slot.start,json(value).dump());
+ else if(slot.app)text.insert(slot.insert,"\t\t\t\t\t\t\"LaunchOptions\"\t\t"+json(value).dump()+"\n\t\t\t\t\t");
+ else throw std::runtime_error("SteamVR profile disappeared");
+ if(launchSlot(text).value!=value)throw std::runtime_error("SteamVR launch option could not be serialized safely");
+ auto mode=fs::status(file).permissions();auto temporary=file;temporary+=".new-"+std::to_string(getpid());
+ try{
+  {std::ofstream out(temporary,std::ios::binary);out<<text;if(!out)throw std::runtime_error("Cannot stage SteamVR launch options");}
+  fs::permissions(temporary,mode);
+  if(read(file)!=before)throw std::runtime_error("Steam profile changed concurrently; quit Steam and retry installation");
+  fs::rename(temporary,file);
+ }catch(...){std::error_code ec;fs::remove(temporary,ec);throw;}
+}
 static bool managerSkipSteamConfig=false;
-static json configureSteam(){json changes=json::array();if(managerSkipSteamConfig)return changes;if(!processes("steam").empty())return changes;auto launcher=prefix()/"bin/wmr-gpu-bridge";for(auto file:steamConfigurations()){auto slot=launchSlot(read(file));auto before=slot.value;std::string after=before;if(before.find(launcher.string())==std::string::npos){auto point=after.find("%command%");if(point==std::string::npos){if(!after.empty())continue;after="%command%";point=0;}after.insert(point,"\""+launcher.string()+"\" ");setLaunch(file,after);}changes.push_back({{"file",file.string()},{"before",before},{"after",after}});}return changes;}
+static json configureSteamProfiles(const std::vector<fs::path>&profiles,const fs::path&launcher,bool running){
+ json changes=json::array();
+ for(auto file:profiles){
+  auto before=launchSlot(read(file)).value;
+  try{
+   auto after=steamLaunch::configure(before,launcher.string());
+   if(!running&&after!=before)setLaunch(file,after);
+   changes.push_back({{"file",file.string()},{"before",before},{"after",after},{"applied",!running},{"note",running?"Steam is running; exit Steam and rerun --install to apply":"Existing environment, driver launcher and arguments preserved"}});
+  }catch(const std::exception&e){
+   changes.push_back({{"file",file.string()},{"before",before},{"after",before},{"applied",false},{"note",e.what()}});
+  }
+ }
+ return changes;
+}
+static json configureSteam(){
+ if(managerSkipSteamConfig)return json::array();
+ return configureSteamProfiles(steamConfigurations(),prefix()/"bin/wmr-gpu-bridge",!processes("steam").empty());
+}
+static void verifySteamLaunch(json&report){
+ auto launcher=prefix()/"bin/wmr-gpu-bridge";
+ for(auto file:steamConfigurations()){
+  auto value=launchSlot(read(file)).value;
+  try{
+   bool valid=steamLaunch::installed(value,launcher.string());
+   check(report,"SteamVR launch integration ("+file.string()+")",valid?"ok":"warn",valid?"Bridge runs before the existing SteamVR launcher":"Bridge is missing or is an argument to another launcher; fully quit Steam and rerun --install. Suggested: "+steamLaunch::configure(value,launcher.string()));
+  }catch(const std::exception&e){check(report,"SteamVR launch integration ("+file.string()+")","warn",e.what());}
+ }
+}
+
 static bool hasOwnedLaunchOption(const fs::path&launcher){for(auto file:steamConfigurations())if(launchSlot(read(file)).value.find(launcher.string())!=std::string::npos)return true;return false;}
 struct ManagerLock {int fd;ManagerLock(){fs::create_directories(state());fd=open((state()/"manager.lock").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||flock(fd,LOCK_EX))throw std::runtime_error("Cannot lock installation state");}~ManagerLock(){flock(fd,LOCK_UN);close(fd);}};
 static fs::path steamDesktop(){return xdg("XDG_DATA_HOME",prefix()/"share")/"applications/wmr-gpu-bridge-steam.desktop";}
@@ -307,12 +397,12 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
  for(auto&f:files)if(f.first!=desktop.string())receipt["files"].push_back(f.second);
  write(state()/"install-receipt.json",receipt.dump(2)+"\n");
  for(const auto& path:legacyShaderFiles())fs::remove(path);
- return {{"installed",true},{"version",MUXLESS_VR_BRIDGE_VERSION},{"launch_option","\""+(prefix()/"bin/wmr-gpu-bridge").string()+"\" %command%"},{"note",processes("steam").empty()?"per-user activation installed; available SteamVR launch options configured without changing vendor files":"per-user activation installed; Steam is running so launch options were not edited; use the printed option"}};
+ return {{"installed",true},{"version",MUXLESS_VR_BRIDGE_VERSION},{"launch_option","\""+(prefix()/"bin/wmr-gpu-bridge").string()+"\" %command%"},{"launch_options",launchChanges},{"note",processes("steam").empty()?"per-user activation installed; review launch_options for changes or manual configuration notes":"per-user activation installed; Steam is running so launch options were not edited. Fully quit Steam and rerun --install to preserve and wrap its existing driver launcher"}};
 }
 static json verify(){json report={{"checks",json::array()},{"runtime",runtimeStatus()}};auto receipt=readJson(state()/"install-receipt.json");if(!receipt.contains("files")){check(report,"installation receipt","error","missing; install using AppImage");return report;}for(auto&f:receipt["files"]){fs::path path=f["path"].get<std::string>();bool ok=fs::is_regular_file(path)&&digest(path)==f["sha256"].get<std::string>();check(report,path.string(),ok?"ok":"error",ok?"checksum matches":"missing or changed");if(f.value("required_mode","")=="root-setuid")check(report,"VR-profile authorization",helperAuthorized(path)?"ok":"error",helperAuthorized(path)?"native helper authorized":"root-owned setuid authorization missing; rerun --install");}auto manifest=readJson(manifestPath());json layers=manifest.value("layers",json::array());if(manifest.contains("layer"))layers.push_back(manifest["layer"]);
  if(layers.empty())check(report,"Vulkan registration","error","No registered layers");
  for(const auto&layer:layers){auto library=layer.value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,layer.value("name","layer"),ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}
- return report;}
+ verifySteamLaunch(report);return report;}
 // Removal protocol 1: schema-1 receipts remain readable by legacy AppImages.
 // New metadata is additive; paths and receipt order are part of the ABI.
 static bool lexicallyUnder(const fs::path&p,const fs::path&root){
