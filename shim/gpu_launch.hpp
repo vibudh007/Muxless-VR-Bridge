@@ -42,6 +42,17 @@ inline Plan plan(const nlohmann::json&inventory){
  if(const char*requested=getenv("DRI_PRIME")){
   std::string selector=requested;if(!selector.empty()&&selector.back()=='!')selector.pop_back();
   for(const auto&p:candidates)if(p.selector==selector||p.ids==selector)return p;
+  // DRI_PRIME is inherited by ordinary desktop sessions too. An integrated
+  // selection is not a request for a particular discrete GPU: replace it with
+  // our discrete selection instead of misreporting the visible iGPU as missing.
+  for(const auto&gpu:inventory["devices"]){
+   if(gpu.value("type",-1)!=1)continue; // VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU.
+   char ids[32];snprintf(ids,sizeof(ids),"%04x:%04x",gpu.value("vendor",0u),gpu.value("device",0u));
+   if(selector==pciSelector(gpu)||selector==ids){
+    std::fprintf(stderr,"Muxless VR Bridge: inherited DRI_PRIME selects an integrated GPU; using discrete GPU %s (%s) instead\n",candidates.front().name.c_str(),candidates.front().selector.c_str());
+    return candidates.front();
+   }
+  }
   if(selector.rfind("pci-",0)==0||selector.find(':')!=std::string::npos)
    throw std::runtime_error("Requested discrete GPU "+selector+" is not visible; refusing to select a different GPU");
  }
