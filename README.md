@@ -87,6 +87,8 @@ Use `2` for shader/layout compatibility or `3` for upload staging retirement. To
 
 `all` disables every patch if all are selected; otherwise it enables every patch. **Restart SteamVR after changing a selection.** These switches do not restart it automatically. No argument displays the same help as `help`; the installed `~/.local/bin/wmr-gpu-bridge` launcher accepts these options too. Older `SVR-001`-style IDs and the single-dash `-toggle-patches` spelling remain supported.
 
+The separate [Room Setup exit repair](patches/steamvr/README.md#003a--room-setup-exit) is available as `--room-setup-fix apply`. Close SteamVR before applying or restoring it.
+
 ## Check an installation
 
 - `--doctor`: discover SteamVR and report host-library, Vulkan and Wayland capabilities. Oasis is reported if installed, but its absence does not block installation. Use it when installation or GPU/display discovery fails. Advertised support is not a headset presentation test.

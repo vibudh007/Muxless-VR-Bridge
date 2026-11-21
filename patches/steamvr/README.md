@@ -28,4 +28,12 @@ An eligible patch also needs to be selected. A SteamVR update does not inherit e
 
 Settings live under `PREFIX/lib/wmr-gpu-bridge/patches/`, within the frozen removal protocol’s ownership scope. The launcher passes that directory through `MUXLESS_STEAMVR_PATCH_CONFIG`. Settings are checksummed in the install receipt and changed with a write-ahead ownership record; upgrades preserve them. The original development XDG location is a fallback only when that environment variable is absent.
 
+## 003A — Room Setup exit
+
+After Room Setup saves calibration, the verified Unity assembly's `Util.Quit` kills its own process. The opt-in repair makes it call `UnityEngine.Application.Quit` so Unity and OpenVR can perform their normal shutdown. The regular SteamVR entry and the Fedora launcher use the same Unity assembly. The one-time repair applies to that verified assembly outside the Vulkan layer.
+
+With Room Setup and SteamVR closed, run either the AppImage or the installed `wmr-gpu-bridge` with `--room-setup-fix apply`. The manager finds the SteamVR installation and validates the full assembly hash before and after replacing the quit method. Use `--room-setup-fix status` to check it and `--room-setup-fix restore` to restore the exact stock bytes. Steam can restore the original assembly during updates or file verification.
+
+`--toggle-patches` controls the three Vulkan repairs. To remove the Room Setup repair when uninstalling the bridge, run `--room-setup-fix restore` first.
+
 No game files are modified.

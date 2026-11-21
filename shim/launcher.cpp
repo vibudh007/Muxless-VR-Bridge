@@ -60,11 +60,11 @@ static void startLog(char**command) {
 }
 int main(int argc,char**argv){try{
     if(argc<2||!strcmp(argv[1],"--help")){
-        std::puts("Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nUsage: wmr-gpu-bridge --steam [ARG...]\n       wmr-gpu-bridge --command COMMAND [ARG...]\n       wmr-gpu-bridge COMMAND [ARG...]\n       wmr-gpu-bridge --toggle-patches [help | all | 1 | 2 | 3]\n       wmr-gpu-bridge --doctor|--verify|--logs|--uninstall\nSteamVR launch option: /absolute/path/to/wmr-gpu-bridge %command%");return argc<2?2:0;
+        std::puts("Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nUsage: wmr-gpu-bridge --steam [ARG...]\n       wmr-gpu-bridge --command COMMAND [ARG...]\n       wmr-gpu-bridge COMMAND [ARG...]\n       wmr-gpu-bridge --toggle-patches [help | all | 1 | 2 | 3]\n       wmr-gpu-bridge --room-setup-fix [status | apply | restore]\n       wmr-gpu-bridge --doctor|--verify|--logs|--uninstall\nSteamVR launch option: /absolute/path/to/wmr-gpu-bridge %command%");return argc<2?2:0;
     }
     if(!strcmp(argv[1],"--version")){std::puts(MUXLESS_VR_BRIDGE_VERSION);return 0;}
     auto root=installation();
-    for(auto option:{"--doctor","--verify","--logs","--uninstall","--toggle-patches","-toggle-patches"})if(!strcmp(argv[1],option)){
+    for(auto option:{"--doctor","--verify","--logs","--uninstall","--toggle-patches","-toggle-patches","--room-setup-fix"})if(!strcmp(argv[1],option)){
         std::string manager=(root/"muxless-vr-bridge-manager").string();argv[0]=const_cast<char*>(manager.c_str());execv(manager.c_str(),argv);throw std::runtime_error("Manager not installed; use the AppImage");
     }
     bool steam=!strcmp(argv[1],"--steam");
