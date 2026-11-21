@@ -36,4 +36,10 @@ With Room Setup and SteamVR closed, run either the AppImage or the installed `wm
 
 `--toggle-patches` controls the three Vulkan repairs. To remove the Room Setup repair when uninstalling the bridge, run `--room-setup-fix restore` first.
 
+## PipeWire audio metadata
+
+On the verified Linux SteamVR 2.19.4 executable, clearing the configured default audio output sends a null metadata value to `vrserver`. The callback now returns before parsing a null value and continues normal handling of populated values.
+
+With SteamVR closed, use `--pipewire-audio-fix apply` through the AppImage or the updated installed launcher. The repair validates the full executable hash and the exact callback bytes. Use `--pipewire-audio-fix status` to inspect the active file and `--pipewire-audio-fix restore` to restore the stock executable. Steam can restore the stock executable during updates or file verification.
+
 No game files are modified.

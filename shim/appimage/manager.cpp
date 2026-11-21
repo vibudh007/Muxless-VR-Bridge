@@ -17,7 +17,9 @@
 #include <thread>
 #include <algorithm>
 #include <cerrno>
+#include <initializer_list>
 #include <optional>
+#include "../../patches/steamvr/pipewire_metadata.hpp"
 #include "../../patches/steamvr/room_setup_exit.hpp"
 #include "../version.hpp"
 #include "../config_text.hpp"
@@ -251,23 +253,22 @@ static void verifySteamLaunch(json&report){
 static bool hasOwnedLaunchOption(const fs::path&launcher){for(auto file:steamConfigurations())if(launchSlot(read(file)).value.find(launcher.string())!=std::string::npos)return true;return false;}
 struct ManagerLock {int fd;ManagerLock(){fs::create_directories(state());fd=open((state()/"manager.lock").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||flock(fd,LOCK_EX))throw std::runtime_error("Cannot lock installation state");}~ManagerLock(){flock(fd,LOCK_UN);close(fd);}};
 
-static void replaceRoomSetupAssembly(const fs::path& path, const std::string& before,
-                                     const std::string& after) {
+static void replaceRepairFile(const fs::path& path, const std::string& before, const std::string& after) {
  const auto mode = fs::status(path).permissions();
  auto temporary = path.string() + ".wmr-XXXXXX";
  const int fd = mkstemp(temporary.data());
- if (fd < 0) throw std::runtime_error("Cannot stage Room Setup assembly in " + path.parent_path().string());
+ if (fd < 0) throw std::runtime_error("Cannot stage SteamVR repair in " + path.parent_path().string());
  try {
   for (size_t written = 0; written < after.size();) {
    const auto count = ::write(fd, after.data() + written, after.size() - written);
    if (count < 0 && errno == EINTR) continue;
-   if (count <= 0) throw std::runtime_error("Cannot write staged Room Setup assembly");
+   if (count <= 0) throw std::runtime_error("Cannot write staged SteamVR repair");
    written += static_cast<size_t>(count);
   }
   if (fchmod(fd, static_cast<mode_t>(mode)) || fsync(fd))
-   throw std::runtime_error("Cannot finalize staged Room Setup assembly");
+   throw std::runtime_error("Cannot finalize staged SteamVR repair");
   if (!fs::is_regular_file(fs::symlink_status(path)) || read(path) != before)
-   throw std::runtime_error("Room Setup assembly changed during repair; exit Steam and retry");
+   throw std::runtime_error("SteamVR file changed during repair; exit Steam and retry");
   fs::rename(temporary, path);
  } catch (...) {
   close(fd);
@@ -278,14 +279,38 @@ static void replaceRoomSetupAssembly(const fs::path& path, const std::string& be
  close(fd);
 }
 
-static json roomSetupFix(const std::string& action) {
- using namespace steamvrRoomSetup;
+struct RepairSpan {
+ size_t offset;
+ std::string_view stock, repaired;
+};
+struct SteamVRFileRepair {
+ const char *command, *description, *relativePath;
+ size_t size;
+ std::string_view stockHash, repairedHash;
+ std::initializer_list<RepairSpan> spans;
+};
+static constexpr SteamVRFileRepair roomSetupRepair{
+ "--room-setup-fix", "Room Setup assembly",
+ "tools/steamvr_room_setup/linux64/steamvr_room_setup_Data/Managed/Assembly-CSharp.dll",
+ steamvrRoomSetup::assemblySize,
+ steamvrRoomSetup::stockSha256, steamvrRoomSetup::repairedSha256,
+ {{steamvrRoomSetup::quitMethodOffset, steamvrRoomSetup::stockQuit, steamvrRoomSetup::repairedQuit}}
+};
+static constexpr SteamVRFileRepair pipewireAudioRepair{
+ "--pipewire-audio-fix", "PipeWire audio metadata handler", "bin/linux64/vrserver",
+ steamvrPipewire::serverSize,
+ steamvrPipewire::stockSha256, steamvrPipewire::repairedSha256,
+ {{steamvrPipewire::callbackOffset, steamvrPipewire::stockCallback, steamvrPipewire::repairedCallback},
+  {steamvrPipewire::unwindRangeOffset, steamvrPipewire::stockUnwindRange, steamvrPipewire::repairedUnwindRange}}
+};
+
+static json repairSteamVRFile(const SteamVRFileRepair& repair, const std::string& action) {
  const bool apply = action == "apply", restore = action == "restore";
  if (!apply && !restore && action != "status")
-  throw std::runtime_error("Usage: --room-setup-fix [status | apply | restore]");
+  throw std::runtime_error(std::string("Usage: ") + repair.command + " [status | apply | restore]");
  const auto runtime = discover().steamvr;
  if (runtime.empty()) throw std::runtime_error("SteamVR installation not found");
- const auto path = runtime / "tools/steamvr_room_setup/linux64/steamvr_room_setup_Data/Managed/Assembly-CSharp.dll";
+ const auto path = runtime / repair.relativePath;
  std::optional<ManagerLock> lock;
  if (apply || restore) {
   lock.emplace();
@@ -293,27 +318,29 @@ static json roomSetupFix(const std::string& action) {
    if (!processes(name).empty()) throw std::runtime_error("Close Room Setup and SteamVR before changing this repair");
  }
  const auto properties = fs::symlink_status(path);
- if (!fs::is_regular_file(properties) || fs::file_size(path) != assemblySize)
-  throw std::runtime_error("Missing or unsupported Room Setup assembly: " + path.string());
+ if (!fs::is_regular_file(properties) || fs::file_size(path) != repair.size)
+  throw std::runtime_error(std::string("Missing or unsupported ") + repair.description + ": " + path.string());
  const auto before = read(path);
  const auto hash = picosha2::hash256_hex_string(before);
- const bool stock = hash == stockSha256, repaired = hash == repairedSha256;
+ const bool stock = hash == repair.stockHash, repaired = hash == repair.repairedHash;
  if (action == "status")
   return {{"state", stock ? "stock" : repaired ? "repaired" : "unsupported"}, {"path", path.string()}, {"sha256", hash}};
  if (!stock && !repaired)
-  throw std::runtime_error("Unsupported Room Setup assembly SHA-256 " + hash + " at " + path.string());
- const auto expectedHash = apply ? repairedSha256 : stockSha256;
+  throw std::runtime_error(std::string("Unsupported ") + repair.description + " SHA-256 " + hash + " at " + path.string());
+ const auto expectedHash = apply ? repair.repairedHash : repair.stockHash;
  if (hash == expectedHash)
   return {{"state", apply ? "repaired" : "stock"}, {"path", path.string()}, {"changed", false}, {"sha256", hash}};
- const auto source = apply ? stockQuit : repairedQuit;
- const auto target = apply ? repairedQuit : stockQuit;
  auto after = before;
- if (after.compare(quitMethodOffset, source.size(), source) != 0)
-  throw std::runtime_error("Room Setup quit method did not match the expected bytes");
- after.replace(quitMethodOffset, source.size(), target);
+ for (const auto& span : repair.spans) {
+  const auto source = apply ? span.stock : span.repaired;
+  const auto target = apply ? span.repaired : span.stock;
+  if (before.compare(span.offset, source.size(), source) != 0)
+   throw std::runtime_error(std::string(repair.description) + " did not match the expected bytes");
+  after.replace(span.offset, source.size(), target);
+ }
  if (picosha2::hash256_hex_string(after) != expectedHash)
-  throw std::runtime_error("Room Setup repair output did not match the expected SHA-256");
- replaceRoomSetupAssembly(path, before, after);
+  throw std::runtime_error("SteamVR repair output did not match the expected SHA-256");
+ replaceRepairFile(path, before, after);
  return {{"state", apply ? "repaired" : "stock"}, {"path", path.string()}, {"changed", true}, {"sha256", std::string(expectedHash)}};
 }
 
@@ -545,18 +572,19 @@ int main(int argc,char**argv){try{
    if(arg=="--toggle-patches"||arg=="-toggle-patches"){
     operation="--toggle-patches";
     if(i+1<argc&&argv[i+1][0]!='-')target=argv[++i];
-   }else if(arg=="--room-setup-fix"){
+   }else if(arg==roomSetupRepair.command||arg==pipewireAudioRepair.command){
     target="status";
     if(i+1<argc&&argv[i+1][0]!='-')target=argv[++i];
    }
   }
  }
  if(operation=="--version"){std::cout<<MUXLESS_VR_BRIDGE_VERSION<<"\n";return 0;}
- if(operation=="--help"){std::cout<<"Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nCommands: --install, --uninstall, --doctor [--json], --verify [--runtime], --logs [--follow]\n          --toggle-patches [help | all | 1 | 2 | 3]\n          --room-setup-fix [status | apply | restore]\nThe AppImage bundles the independent SteamVR patchset.\n";return 0;}
+ if(operation=="--help"){std::cout<<"Muxless VR Bridge " MUXLESS_VR_BRIDGE_VERSION "\nCommands: --install, --uninstall, --doctor [--json], --verify [--runtime], --logs [--follow]\n          --toggle-patches [help | all | 1 | 2 | 3]\n          --room-setup-fix [status | apply | restore]\n          --pipewire-audio-fix [status | apply | restore]\nThe AppImage bundles the independent SteamVR patchset.\n";return 0;}
  if(operation=="--toggle-patches"){
   if(target=="help"){patchHelp();return 0;}print(togglePatches(target),machine);return 0;
  }
- if(operation=="--room-setup-fix"){print(roomSetupFix(target),machine);return 0;}
+ if(operation==roomSetupRepair.command){print(repairSteamVRFile(roomSetupRepair,target),machine);return 0;}
+ if(operation==pipewireAudioRepair.command){print(repairSteamVRFile(pipewireAudioRepair,target),machine);return 0;}
  if(operation=="--doctor"){auto r=doctor();print(r,machine);return std::any_of(r["checks"].begin(),r["checks"].end(),[](const json&c){return c["level"]=="error";})?1:0;}
  if(operation=="--install"){auto r=install();r["verification"]=verify();print(r,machine);return std::any_of(r["verification"]["checks"].begin(),r["verification"]["checks"].end(),[](const json&c){return c["level"]=="error";})?1:0;}
  if(operation=="--verify"){auto r=verify();print(r,machine);if(std::any_of(r["checks"].begin(),r["checks"].end(),[](const json&c){return c["level"]=="error";}))return 1;return requireRuntime&&r["runtime"].value("state","")!="loaded"?2:0;}

@@ -19,7 +19,7 @@ shutil.copy2(root/'shim/third_party/nlohmann/LICENSE.MIT',licenses/'nlohmann-jso
 shutil.copy2(root/'shim/third_party/picosha2/LICENSE',licenses/'PicoSHA2.MIT')
 for p in (root/'shim/build-portable/licenses').glob('COPYING*'):shutil.copy2(p,licenses/p.name)
 files=[p for p in sorted(app.rglob('*')) if p.is_file() and p.name!='payload.json']
-payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan, Wayland and DRM libraries','patches':['SVR-001','SVR-002','SVR-003A','SVR-006'],'files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
+payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan, Wayland and DRM libraries','patches':['SVR-001','SVR-002','SVR-003A','SVR-006','pipewire-audio'],'files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
 (app/'payload.json').write_text(json.dumps(payload,indent=2)+'\n')
 lock=json.loads((root/'shim/appimage/toolchain-lock.json').read_text());tool=Path('/tmp/muxless-vr-bridge-appimagetool.AppImage')
 if not tool.exists():tool.write_bytes(urllib.request.urlopen(lock['tool_url']).read())
