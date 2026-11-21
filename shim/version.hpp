@@ -1,2 +1,2 @@
 #pragma once
-#define MUXLESS_VR_BRIDGE_VERSION "0.2.4-alpha"
+#define MUXLESS_VR_BRIDGE_VERSION "0.3"

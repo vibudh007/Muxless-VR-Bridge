@@ -1,5 +1,6 @@
 /shim/build/
 /shim/build-portable/
+/shim/build-desktop-fixture/
 /shim/dist/
 __pycache__/
 

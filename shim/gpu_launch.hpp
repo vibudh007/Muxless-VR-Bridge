@@ -1,13 +1,13 @@
 #pragma once
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <map>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,7 +17,8 @@
 
 namespace gpuLaunch {
 using Environment=std::map<std::string,std::string>;
-struct Plan {std::string name,selector,ids,driver;bool nvidia=false;bool systemDrivers=false;std::string discovery;};
+inline constexpr const char* renderDeviceUuid="MUXLESS_RENDER_DEVICE_UUID";
+struct Plan {std::string name,selector,ids,driver,uuid;bool systemDrivers=false;std::string discovery;};
 inline std::string pciSelector(const nlohmann::json&gpu){
  if(!gpu.value("has_pci",false))return {};
  auto domain=gpu.value("pci_domain",0u),bus=gpu.value("pci_bus",0u),device=gpu.value("pci_device",0u),function=gpu.value("pci_function",0u);
@@ -30,15 +31,21 @@ inline Plan plan(const nlohmann::json&inventory){
  for(const auto&gpu:inventory["devices"]){
   if(gpu.value("type",-1)!=2)continue; // Only VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU.
   char ids[32];snprintf(ids,sizeof(ids),"%04x:%04x",gpu.value("vendor",0u),gpu.value("device",0u));
-  Plan p{gpu.value("name",std::string("GPU")),pciSelector(gpu),ids,gpu.value("driver_name",std::string()),gpu.value("driver_id",0)==4}; // VK_DRIVER_ID_NVIDIA_PROPRIETARY
+  Plan p{gpu.value("name",std::string("GPU")),pciSelector(gpu),ids,gpu.value("driver_name",std::string()),gpu.value("device_uuid",std::string())};
+  if(p.uuid.size()!=32||p.uuid.find_first_not_of("0123456789abcdef")!=std::string::npos||p.uuid.find_first_not_of('0')==std::string::npos)
+   throw std::runtime_error("Invalid Vulkan device UUID for "+p.name);
   if(p.selector.empty())p.selector=p.ids;
   discrete.push_back(p);
  }
  auto&candidates=discrete;
  if(candidates.empty())throw std::runtime_error("No discrete Vulkan GPU is visible. Refusing to render on an integrated or software GPU");
- // Stable selection for multi-dGPU systems; prefer a caller's explicit discrete
- // PCI/device selector when supplied. No model/vendor preference is imposed.
- std::sort(candidates.begin(),candidates.end(),[](const Plan&a,const Plan&b){return a.selector<b.selector;});
+ // Preserve an explicit device from the parent launcher across Steam's processes.
+ // Otherwise retain the existing handling of inherited desktop GPU preferences.
+ std::sort(candidates.begin(),candidates.end(),[](const Plan&a,const Plan&b){return a.selector==b.selector?a.uuid<b.uuid:a.selector<b.selector;});
+ if(const char*requested=getenv(renderDeviceUuid);requested&&*requested){
+  for(const auto&p:candidates)if(p.uuid==requested)return p;
+  throw std::runtime_error("Requested render device UUID is not visible as a discrete Vulkan GPU");
+ }
  if(const char*requested=getenv("DRI_PRIME")){
   std::string selector=requested;if(!selector.empty()&&selector.back()=='!')selector.pop_back();
   for(const auto&p:candidates)if(p.selector==selector||p.ids==selector)return p;
@@ -76,9 +83,10 @@ inline Plan detect(const std::filesystem::path&probe){
  throw std::runtime_error("Cannot select a discrete rendering GPU; no integrated fallback was used. "+failures);
 }
 inline Environment settings(const Plan&p){
- Environment e{{"DRI_PRIME",p.selector}};
- if(p.nvidia){e["__NV_PRIME_RENDER_OFFLOAD"]="1";e["__VK_LAYER_NV_optimus"]="NVIDIA_only";e["__GLX_VENDOR_LIBRARY_NAME"]="nvidia";}
- return e;
+ // Favor the intended model while still exposing the display-owning device.
+ // The Vulkan adapter verifies the physical device UUID at startup.
+ auto separator=p.ids.find(':');
+ return {{renderDeviceUuid,p.uuid},{"VK_LOADER_DEVICE_SELECT","0x"+p.ids.substr(0,separator)+":0x"+p.ids.substr(separator+1)}};
 }
 inline void apply(const Plan&p){
  if(p.systemDrivers)gpuInventory::clearDrivers();
@@ -88,11 +96,9 @@ inline void apply(const Plan&p){
 inline bool compatible(const Environment&e,const Plan&p){
  auto get=[&](const char*name){auto i=e.find(name);return i==e.end()?std::string():i->second;};
  if(p.systemDrivers)for(auto name:gpuInventory::driverOverrides)if(!get(name).empty())return false;
- const bool target=get("DRI_PRIME")==p.selector||get("DRI_PRIME")==p.ids;
- if(!target||!get("VK_LOADER_DEVICE_SELECT").empty()||!get("NODEVICE_SELECT").empty()||!get("MESA_VK_DEVICE_SELECT").empty()||!get("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE").empty()||!get("__NV_PRIME_RENDER_OFFLOAD_PROVIDER").empty())return false;
- if(p.nvidia)return get("__NV_PRIME_RENDER_OFFLOAD")=="1"&&get("__VK_LAYER_NV_optimus")=="NVIDIA_only"&&get("__GLX_VENDOR_LIBRARY_NAME")=="nvidia";
- // Numeric DRI_PRIME=1 does not identify a physical GPU and is not sufficient.
- return get("__GLX_VENDOR_LIBRARY_NAME")!="nvidia"&&get("__NV_PRIME_RENDER_OFFLOAD")!="1"&&get("__VK_LAYER_NV_optimus").empty();
+ for(auto name:gpuInventory::preferences)if(std::strcmp(name,"VK_LOADER_DEVICE_SELECT")&&!get(name).empty())return false;
+ for(const auto&[name,value]:settings(p))if(get(name.c_str())!=value)return false;
+ return true;
 }
 // SteamVR changes its main-thread comm. argv[0] still identifies the executable.
 inline bool processNamed(const std::filesystem::path& dir,const std::string& wanted){

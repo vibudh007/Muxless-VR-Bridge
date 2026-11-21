@@ -20,12 +20,17 @@ static fs::path installation() {
 }
 static void activate(const fs::path& root,const gpuLaunch::Plan&gpu) {
     gpuLaunch::apply(gpu);
-    setenv("MUXLESS_MINIMAL","1",1);
+    unsetenv("MUXLESS_MINIMAL");
+    if(setenv("V3_ENABLE_LAYER","1",1)||setenv("V3_OUTPUT","headset",0)||setenv("V3_TRANSPORT","auto",0))
+        throw std::runtime_error("Cannot configure the Vulkan bridge");
+    // Only the package's bridge and configured repairs may handle SteamVR.
     setenv("DISABLE_MUXLESS_MINIMAL","1",1);
     unsetenv("DISABLE_MUXLESS_VR_BRIDGE");
-    // Disable earlier standalone registrations to prevent two bridges/repair layers.
     setenv("DISABLE_WMR_GPU_BRIDGE","1",1);
     setenv("DISABLE_STEAMVR_RUNTIME_PATCHES","1",1);
+    setenv("DISABLE_MUXLESS_BRIDGE_FIX","1",1);
+    setenv("DISABLE_MUXLESS_STEAMVR_FIX_PATCHES","1",1);
+    setenv("V3_DISABLE_LAYER","1",1);
     unsetenv("DISABLE_MUXLESS_STEAMVR_PATCHES");
     auto config=root.parent_path()/"patches";
     setenv("MUXLESS_STEAMVR_PATCH_CONFIG",config.c_str(),1);
@@ -71,7 +76,8 @@ int main(int argc,char**argv){try{
     std::fprintf(stderr,"Muxless VR Bridge: GPU discovery %s\n",gpu.discovery.c_str());
     if(steam)gpuLaunch::requireDgpuSteam(gpu);
     activate(root,gpu);
-    if(steam){std::fprintf(stderr,"Muxless VR Bridge: rendering GPU %s (%s, %s)\n",gpu.name.c_str(),gpu.selector.c_str(),gpu.nvidia?"NVIDIA offload":"Mesa selection");std::vector<char*>args{const_cast<char*>("steam")};for(int i=2;i<argc;i++)args.push_back(argv[i]);args.push_back(nullptr);execvp("steam",args.data());}
-    else {std::fprintf(stderr,"Muxless VR Bridge: rendering GPU %s (%s, %s)\n",gpu.name.c_str(),gpu.selector.c_str(),gpu.nvidia?"NVIDIA offload":"Mesa selection");execvp(argv[first],argv+first);}
+    std::fprintf(stderr,"Muxless VR Bridge: requested render GPU %s (%s, UUID %s)\n",gpu.name.c_str(),gpu.selector.c_str(),gpu.uuid.c_str());
+    if(steam){std::vector<char*>args{const_cast<char*>("steam")};for(int i=2;i<argc;i++)args.push_back(argv[i]);args.push_back(nullptr);execvp("steam",args.data());}
+    else execvp(argv[first],argv+first);
     std::perror("Cannot launch command");return 127;
 }catch(const std::exception&e){std::fprintf(stderr,"Muxless VR Bridge: %s\n",e.what());return 1;}}

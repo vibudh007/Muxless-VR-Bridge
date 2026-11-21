@@ -6,7 +6,7 @@ assert ('#define MUXLESS_VR_BRIDGE_VERSION \"'+version+'\"') in (root/'shim/vers
 dist=root/'shim/dist';dist.mkdir(parents=True,exist_ok=True)
 staging=tempfile.TemporaryDirectory(dir=dist)
 app=Path(staging.name)/'Muxless-VR-Bridge.AppDir';(app/'usr/bin').mkdir(parents=True);(app/'usr/lib').mkdir()
-for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe','muxless-vr-profile']:
+for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe']:
  shutil.copy2(root/'shim/build-portable'/name,app/'usr/bin'/name)
 for library in ['libmuxless_vr_bridge.so', 'libsteamvr_runtime_patches.so']:
  shutil.copy2(root/'shim/build-portable'/library,app/'usr/lib'/library)
@@ -19,13 +19,18 @@ shutil.copy2(root/'shim/third_party/nlohmann/LICENSE.MIT',licenses/'nlohmann-jso
 shutil.copy2(root/'shim/third_party/picosha2/LICENSE',licenses/'PicoSHA2.MIT')
 for p in (root/'shim/build-portable/licenses').glob('COPYING*'):shutil.copy2(p,licenses/p.name)
 files=[p for p in sorted(app.rglob('*')) if p.is_file() and p.name!='payload.json']
-payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan and Wayland libraries','patches':['SVR-001','SVR-002','SVR-006'],'files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
+payload={'version':version,'baseline':'glibc 2.28; x86-64; host Vulkan, Wayland and DRM libraries','patches':['SVR-001','SVR-002','SVR-006'],'files':[{'path':str(p.relative_to(app)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
 (app/'payload.json').write_text(json.dumps(payload,indent=2)+'\n')
 lock=json.loads((root/'shim/appimage/toolchain-lock.json').read_text());tool=Path('/tmp/muxless-vr-bridge-appimagetool.AppImage')
 if not tool.exists():tool.write_bytes(urllib.request.urlopen(lock['tool_url']).read())
 if hashlib.sha256(tool.read_bytes()).hexdigest()!=lock['tool_sha256']:raise SystemExit('appimagetool integrity check failed')
 tool.chmod(0o755);output=dist/f'Muxless-VR-Bridge-{version}-x86_64.AppImage'
-subprocess.run([str(tool),'-n','--mksquashfs-opt','-processors','--mksquashfs-opt','2',str(app),str(output)],env={**os.environ,'APPIMAGE_EXTRACT_AND_RUN':'1','ARCH':'x86_64'},check=True)
+runtime=Path(staging.name)/'runtime-x86_64'
+with urllib.request.urlopen(lock['appimage_runtime']['url'],timeout=30) as response:
+    data=response.read()
+if hashlib.sha256(data).hexdigest()!=lock['appimage_runtime']['sha256']:raise SystemExit('AppImage runtime integrity check failed')
+runtime.write_bytes(data)
+subprocess.run([str(tool),'-n','--runtime-file',str(runtime),'--mksquashfs-opt','-processors','--mksquashfs-opt','2',str(app),str(output)],env={**os.environ,'APPIMAGE_EXTRACT_AND_RUN':'1','ARCH':'x86_64'},check=True)
 output.with_name(output.name+'.sha256').write_text(hashlib.sha256(output.read_bytes()).hexdigest()+'  '+output.name+'\n')
 staging.cleanup()
 print(output)

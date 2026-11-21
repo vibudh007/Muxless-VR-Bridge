@@ -3,6 +3,15 @@
   "tool_sha256": "e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03",
   "release_asset_digest": "sha256:e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03",
   "base_image": "docker.io/library/rockylinux@sha256:2d05a9266523bbf24f33ebc3a9832e4d5fd74b973c220f2204ca802286aa275d",
+  "appimage_runtime": {
+    "url": "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64",
+    "sha256": "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46"
+  },
+  "vulkan_headers": {
+    "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/v1.4.341",
+    "sha256": "8876aad926b2e72bdefddc34885472d5332e2d20aa3ed57313466f0bc982cf3f",
+    "root": "Vulkan-Headers-1.4.341"
+  },
   "third_party": {
     "shim/third_party/nlohmann/json.hpp": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63",
     "shim/third_party/picosha2/picosha2.h": "8f183eaae529cd9d6a3d4843c7559e2a3e3d68b6caaa223e7c24c3c899b3d988"
