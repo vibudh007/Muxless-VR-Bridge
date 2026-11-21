@@ -1,4 +1,5 @@
 #pragma once
+#include <vulkan/vulkan_core.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -7,7 +8,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,7 +18,7 @@
 namespace gpuLaunch {
 using Environment=std::map<std::string,std::string>;
 inline constexpr const char* renderDeviceUuid="MUXLESS_RENDER_DEVICE_UUID";
-struct Plan {std::string name,selector,ids,driver,uuid;bool systemDrivers=false;std::string discovery;};
+struct Plan {std::string name,selector,ids,driver,uuid;int driverId{};bool systemDrivers=false;std::string discovery;};
 inline std::string pciSelector(const nlohmann::json&gpu){
  if(!gpu.value("has_pci",false))return {};
  auto domain=gpu.value("pci_domain",0u),bus=gpu.value("pci_bus",0u),device=gpu.value("pci_device",0u),function=gpu.value("pci_function",0u);
@@ -31,7 +31,7 @@ inline Plan plan(const nlohmann::json&inventory){
  for(const auto&gpu:inventory["devices"]){
   if(gpu.value("type",-1)!=2)continue; // Only VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU.
   char ids[32];snprintf(ids,sizeof(ids),"%04x:%04x",gpu.value("vendor",0u),gpu.value("device",0u));
-  Plan p{gpu.value("name",std::string("GPU")),pciSelector(gpu),ids,gpu.value("driver_name",std::string()),gpu.value("device_uuid",std::string())};
+  Plan p{gpu.value("name",std::string("GPU")),pciSelector(gpu),ids,gpu.value("driver_name",std::string()),gpu.value("device_uuid",std::string()),gpu.value("driver_id",0)};
   if(p.uuid.size()!=32||p.uuid.find_first_not_of("0123456789abcdef")!=std::string::npos||p.uuid.find_first_not_of('0')==std::string::npos)
    throw std::runtime_error("Invalid Vulkan device UUID for "+p.name);
   if(p.selector.empty())p.selector=p.ids;
@@ -86,7 +86,17 @@ inline Environment settings(const Plan&p){
  // Favor the intended model while still exposing the display-owning device.
  // The Vulkan adapter verifies the physical device UUID at startup.
  auto separator=p.ids.find(':');
- return {{renderDeviceUuid,p.uuid},{"VK_LOADER_DEVICE_SELECT","0x"+p.ids.substr(0,separator)+":0x"+p.ids.substr(separator+1)}};
+ Environment environment{{renderDeviceUuid,p.uuid},{"VK_LOADER_DEVICE_SELECT","0x"+p.ids.substr(0,separator)+":0x"+p.ids.substr(separator+1)}};
+ // Steam's OpenGL surfaces must also use the render GPU for texture sharing.
+ // Select it without hiding any devices from Vulkan enumeration.
+ if(p.driverId==VK_DRIVER_ID_NVIDIA_PROPRIETARY){
+  environment["__NV_PRIME_RENDER_OFFLOAD"]="1";
+  environment["__GLX_VENDOR_LIBRARY_NAME"]="nvidia";
+ }else if(p.selector.rfind("pci-",0)==0){
+  // The OpenGL driver can be Mesa even when Vulkan uses a different ICD.
+  environment["DRI_PRIME"]=p.selector;
+ }
+ return environment;
 }
 inline void apply(const Plan&p){
  if(p.systemDrivers)gpuInventory::clearDrivers();
@@ -96,8 +106,9 @@ inline void apply(const Plan&p){
 inline bool compatible(const Environment&e,const Plan&p){
  auto get=[&](const char*name){auto i=e.find(name);return i==e.end()?std::string():i->second;};
  if(p.systemDrivers)for(auto name:gpuInventory::driverOverrides)if(!get(name).empty())return false;
- for(auto name:gpuInventory::preferences)if(std::strcmp(name,"VK_LOADER_DEVICE_SELECT")&&!get(name).empty())return false;
- for(const auto&[name,value]:settings(p))if(get(name.c_str())!=value)return false;
+ const auto expected=settings(p);
+ for(auto name:gpuInventory::preferences)if(!expected.count(name)&&!get(name).empty())return false;
+ for(const auto&[name,value]:expected)if(get(name.c_str())!=value)return false;
  return true;
 }
 // SteamVR changes its main-thread comm. argv[0] still identifies the executable.
