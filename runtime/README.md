@@ -18,7 +18,7 @@ This is capability-driven, not a claim that every GPU driver has the same featur
 
 ## Privilege boundary
 
-At installation, the native helper is copied inside the versioned, receipt-owned payload. If a discrete GPU advertises VR, the installer invokes an existing administrator-authorization mechanism once to set this helper inode root-owned/setuid. Neither Steam nor the graphics layer runs as root. No system service, udev rule or global configuration file is installed.
+The installer copies the helper into the versioned payload. To opt in on a GPU that advertises the named VR profile, run `sudo ~/.local/lib/wmr-gpu-bridge/0.3.1-alpha/muxless-vr-profile --authorize` once. Authorization makes the helper root-owned and setuid. Reinstalling an identical helper preserves authorization. Authorize a replacement helper after an upgrade. Steam and the graphics layer run as the desktop user.
 
 At startup, the caller opens the selected render node itself and supplies that fd plus a same-user Unix lease socket. The helper validates that the fd is a DRM render node, resolves its kernel-owned sysfs device, opens only the fixed profile control, takes an exclusive GPU-policy lock, and permanently drops root privileges and supplementary groups. It accepts no caller-supplied sysfs path, profile number or executable command. The service detaches only after dropping privileges.
 

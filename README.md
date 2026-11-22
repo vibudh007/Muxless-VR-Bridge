@@ -10,11 +10,11 @@ See the [portability audit](docs/portability-audit.md) for the design and compat
 
 ## Install
 
-Download `Muxless-VR-Bridge-0.3-x86_64.AppImage` from Releases, close SteamVR and fully quit Steam, then run the following commands.
+Download `Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage` from Releases, close SteamVR and fully quit Steam, then run the following commands.
 
 ```sh
-chmod +x Muxless-VR-Bridge-0.3-x86_64.AppImage
-./Muxless-VR-Bridge-0.3-x86_64.AppImage --install
+chmod +x Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage
+./Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage --install
 ```
 
 Installation checks dependencies, installs the bridge for your user, and configures SteamVR’s launch option in existing Steam profiles. If SteamVR has yet to appear in a Steam profile, the installer prints the launch option to put in **SteamVR → Properties → Launch Options**.
@@ -65,24 +65,24 @@ See [patch applicability](patches/steamvr/README.md) for the exact allowlist.
 
 ### How to use the patches
 
-Installation selects all three repairs by default. Your selections are preserved across upgrades; a selected repair runs only on an eligible executable. Disabling a required repair can reintroduce crashes.
+Fresh installations start with all three repairs unselected. Your selections are preserved across upgrades; a selected repair runs only on an eligible executable. Disabling a required repair can reintroduce crashes.
 
 Show each patch's purpose, ID and current selection:
 
 ```sh
-./Muxless-VR-Bridge-0.3-x86_64.AppImage --toggle-patches help
+./Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage --toggle-patches help
 ```
 
 Toggle one patch using its number. For example, toggle descriptor cache ownership:
 
 ```sh
-./Muxless-VR-Bridge-0.3-x86_64.AppImage --toggle-patches 1
+./Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage --toggle-patches 1
 ```
 
 Use `2` for shader/layout compatibility or `3` for upload staging retirement. To toggle the entire set:
 
 ```sh
-./Muxless-VR-Bridge-0.3-x86_64.AppImage --toggle-patches all
+./Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage --toggle-patches all
 ```
 
 `all` disables every patch if all are selected; otherwise it enables every patch. **Restart SteamVR after changing a selection.** These switches do not restart it automatically. No argument displays the same help as `help`; the installed `~/.local/bin/wmr-gpu-bridge` launcher accepts these options too. Older `SVR-001`-style IDs and the single-dash `-toggle-patches` spelling remain supported.
@@ -100,12 +100,22 @@ Pass these options to the AppImage or the installed `~/.local/bin/wmr-gpu-bridge
 
 If FUSE is unavailable, prefix AppImage commands with `APPIMAGE_EXTRACT_AND_RUN=1`.
 
+## VR workload profile
+
+On a GPU that advertises a named `VR` workload profile, the bridge can select it for the SteamVR session and restore the previous profile when the last client exits. Authorize the optional helper once after installation. The helper only changes the advertised workload profile.
+
+```sh
+sudo ~/.local/lib/wmr-gpu-bridge/0.3.1-alpha/muxless-vr-profile --authorize
+```
+
+Set `MUXLESS_VR_PROFILE=0` before launching Steam to skip profile selection. See [profile detection and authorization](runtime/README.md).
+
 ## Uninstall
 
 Close SteamVR and fully quit Steam, then run:
 
 ```sh
-./Muxless-VR-Bridge-0.3-x86_64.AppImage --uninstall
+./Muxless-VR-Bridge-0.3.1-alpha-x86_64.AppImage --uninstall
 ```
 
 The schema-1 removal protocol supports uninstalling across package versions. It removes owned files and the bridge’s SteamVR launch wrapper, preserves modified files, logs and calibration, and does not require Oasis or a working GPU. New versions retain the same receipt location and allowed file layout so older uninstallers can remove them. See [the removal protocol](shim/appimage/REMOVAL-PROTOCOL.md).

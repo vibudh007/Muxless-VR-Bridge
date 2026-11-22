@@ -128,7 +128,7 @@ static json runtimeStatus(const fs::path&proc="/proc"){
    enabled|=entry=="V3_ENABLE_LAYER=1";
    if(entry.rfind("V3_TRANSPORT=",0)==0){
     const auto mode=entry.substr(sizeof("V3_TRANSPORT=")-1);
-    transport=mode=="auto"||mode=="copy"||mode=="sdma"||mode=="ace"||mode=="direct"||mode=="peer";
+    transport=mode=="auto"||mode=="copy"||mode=="ace"||mode=="direct"||mode=="peer";
    }
    output|=entry=="V3_OUTPUT=headset"||entry=="V3_OUTPUT=desktop";
    disabled|=entry=="DISABLE_MUXLESS_VR_BRIDGE=1";
@@ -147,6 +147,10 @@ static json runtimeStatus(const fs::path&proc="/proc"){
 }
 
 static bool under(const fs::path&p,const fs::path&root){auto relative=fs::weakly_canonical(p).lexically_relative(fs::weakly_canonical(root));return !relative.empty()&&*relative.begin()!="..";}
+static bool profileHelperAuthorized(const fs::path&path){
+ struct stat st{};
+ return !lstat(path.c_str(),&st)&&S_ISREG(st.st_mode)&&st.st_uid==0&&(st.st_mode&S_ISUID)&&!(st.st_mode&0022);
+}
 static bool verifyPayload(){auto root=appDir();auto payload=readJson(root/"payload.json");if(!payload.contains("files"))throw std::runtime_error("Payload manifest missing; use the AppImage to install");for(auto&file:payload["files"]){auto path=root/file["path"].get<std::string>();if(!under(path,root)||digest(path)!=file["sha256"].get<std::string>())throw std::runtime_error("Payload integrity check failed: "+path.string());}return true;}
 
 struct LaunchSlot {size_t start=0,end=0,insert=0;std::string value;bool found=false,app=false;};
@@ -464,10 +468,12 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
   if(old!=files.end()&&old->second.value("sha256","")!=hash)owned["previous_sha256"]=old->second["sha256"];
   files[path.string()]=owned;persistReceipt();
  };
- std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/lib/libsteamvr_runtime_patches.so",libdir/"libsteamvr_runtime_patches.so"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"}};
+ std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/lib/libsteamvr_runtime_patches.so",libdir/"libsteamvr_runtime_patches.so"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"},{root/"usr/bin/muxless-vr-profile",libdir/"muxless-vr-profile"}};
  for(auto&pair:copies){
-  record(pair.second,digest(pair.first));
-  copyManaged(pair.first,pair.second);
+  const auto hash=digest(pair.first);
+  const bool keepAuthorized=pair.second.filename()=="muxless-vr-profile"&&profileHelperAuthorized(pair.second)&&digest(pair.second)==hash;
+  record(pair.second,hash);
+  if(!keepAuthorized)copyManaged(pair.first,pair.second);
  }
  auto manifest=managedManifest(libdir);
  for(const auto&p:patches){
@@ -482,8 +488,7 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
  auto launchChanges=configureSteam();
  for(auto it=files.begin();it!=files.end();){
   fs::path path=it->first;
-  const bool retiredProfile=path==libdir/"muxless-vr-profile";
-  if(under(path,prefix()/"lib/wmr-gpu-bridge")&&(retiredProfile||(!under(path,libdir)&&!under(path,patchDirectory())))){
+  if(under(path,prefix()/"lib/wmr-gpu-bridge")&&!under(path,libdir)&&!under(path,patchDirectory())){
    auto status=fs::symlink_status(path);
    if(status.type()==fs::file_type::not_found||ownedFile(path,status,it->second)){
     if(status.type()!=fs::file_type::not_found)fs::remove(path);
@@ -505,6 +510,10 @@ static json verify(){json report={{"checks",json::array()},{"runtime",runtimeSta
  check(report,"Vulkan registration",correctRegistration?"ok":"error",correctRegistration?
        "Bridge activation and repair layer order match the package":"Managed layer registration differs from this package; rerun --install");
  for(const auto&layer:layers){auto library=layer.value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,layer.value("name","layer"),ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}
+ const auto helper=libraryDirectory()/"muxless-vr-profile";
+ const bool authorized=profileHelperAuthorized(helper);
+ check(report,"VR workload profile helper",authorized?"ok":"warn",authorized?
+       "Authorized for driver-advertised VR mode":"Optional helper authorization is missing; see runtime/README.md");
  verifySteamLaunch(report);return report;}
 // Removal protocol 1: schema-1 receipts remain readable by legacy AppImages.
 // New metadata is additive; paths and receipt order are part of the ABI.

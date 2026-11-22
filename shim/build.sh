@@ -53,3 +53,4 @@ cxx=${CXX:-c++}
 "$cxx" "${flags[@]}" shim/launcher.cpp "${filesystem[@]}" -o "$out/wmr-gpu-bridge"
 "$cxx" "${flags[@]}" shim/appimage/manager.cpp -ldl "${filesystem[@]}" -o "$out/muxless-vr-bridge-manager"
 "$cxx" "${flags[@]}" shim/appimage/probe.cpp -lvulkan -lwayland-client -o "$out/muxless-vr-bridge-probe"
+"$cxx" "${flags[@]}" runtime/profile_helper.cpp "${filesystem[@]}" -o "$out/muxless-vr-profile"

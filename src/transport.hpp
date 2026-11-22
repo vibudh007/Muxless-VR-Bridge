@@ -8,7 +8,7 @@
 
 namespace v3 {
 
-enum class Transport { direct, copy, peer, sdma, ace };
+enum class Transport { direct, copy, peer, ace };
 
 struct Vulkan {
     VkPhysicalDevice physical;
