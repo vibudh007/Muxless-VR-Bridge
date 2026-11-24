@@ -6,8 +6,6 @@ SteamVR composes the headset image on the discrete GPU. The bridge uses a Vulkan
 
 The headset path requires a render device with Vulkan DMA-BUF and sync-file support and a display plane that can import a compatible linear framebuffer. On Wayland the compositor must grant the runtime a DRM lease for the headset connector. SteamVR is the supported runtime. The independent SteamVR patches are available as an opt-in.
 
-See the [portability audit](docs/portability-audit.md) for the design and compatibility requirements.
-
 Notice: This software was developed with the help of LLMs.
 
 ## Install
