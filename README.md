@@ -8,6 +8,8 @@ The headset path requires a render device with Vulkan DMA-BUF and sync-file supp
 
 See the [portability audit](docs/portability-audit.md) for the design and compatibility requirements.
 
+Notice: This software was developed with the help of LLMs.
+
 ## Install
 
 Download `Muxless-VR-Bridge-0.3-x86_64.AppImage` from Releases, close SteamVR and fully quit Steam, then run the following commands.
