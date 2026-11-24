@@ -71,15 +71,23 @@ inline std::shared_ptr<void> acquire(unsigned renderMajor,unsigned renderMinor){
         int renderCopy=fcntl(render,F_DUPFD_CLOEXEC,4);close(render);if(renderCopy<0)return {};
         int sockets[2];if(socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,sockets)){close(renderCopy);return {};}
         auto lease=std::make_shared<Lease>();lease->socket=sockets[0];
-        posix_spawn_file_actions_t actions;posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_adddup2(&actions,sockets[1],0);
-        posix_spawn_file_actions_addclose(&actions,sockets[0]);
-        posix_spawn_file_actions_addclose(&actions,sockets[1]);
-        posix_spawn_file_actions_adddup2(&actions,renderCopy,3);
-        posix_spawn_file_actions_addclose(&actions,renderCopy);
-        std::string executable=helper.string();char*args[]={const_cast<char*>(executable.c_str()),const_cast<char*>("--lease"),nullptr};
-        int result=posix_spawn(&lease->child,executable.c_str(),&actions,nullptr,args,environ);
-        posix_spawn_file_actions_destroy(&actions);close(sockets[1]);close(renderCopy);
+        // Both source descriptors must survive overwriting stdin and fd 3.
+        int childSocket=fcntl(sockets[1],F_DUPFD_CLOEXEC,4);
+        close(sockets[1]);
+        if(childSocket<0){close(renderCopy);return {};}
+        posix_spawn_file_actions_t actions;
+        int result=posix_spawn_file_actions_init(&actions);
+        if(!result){
+            result=posix_spawn_file_actions_adddup2(&actions,childSocket,0);
+            if(!result)result=posix_spawn_file_actions_adddup2(&actions,renderCopy,3);
+            if(!result){
+                std::string executable=helper.string();
+                char*args[]={const_cast<char*>(executable.c_str()),const_cast<char*>("--lease"),nullptr};
+                result=posix_spawn(&lease->child,executable.c_str(),&actions,nullptr,args,environ);
+            }
+            posix_spawn_file_actions_destroy(&actions);
+        }
+        close(childSocket);close(renderCopy);
         if(result){lease->child=-1;return {};}
         pollfd ready{lease->socket,POLLIN,0};char status='E';
         if(poll(&ready,1,2000)<=0||recv(lease->socket,&status,1,0)!=1||status!='A'){

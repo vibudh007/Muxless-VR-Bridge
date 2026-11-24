@@ -3,6 +3,7 @@
 #include "display-event.hpp"
 #include "output-audit.hpp"
 #include "virtual-display.hpp"
+#include "../runtime/profile_session.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +38,7 @@ struct Device {
     std::shared_ptr<Instance> instance;
     Vulkan vk{};
     bool bridge{};
+    std::shared_ptr<void> profileLease;
     PFN_vkSetDeviceLoaderData loader{};
     uint32_t renderFamily{};
     uint32_t acquireFamily{};
@@ -116,7 +118,7 @@ const Configuration &configuration() {
 
         constexpr Configuration modes[] = {{"auto", Transport::copy, false, true},
                                            {"direct", Transport::direct}, {"copy", Transport::copy},
-                                           {"peer", Transport::peer}, {"sdma", Transport::sdma},
+                                           {"peer", Transport::peer},
                                            {"ace", Transport::ace}};
         const auto selected = std::find_if(std::begin(modes), std::end(modes), [mode](const auto &entry) {
             return mode && !std::strcmp(mode, entry.name);
@@ -137,7 +139,7 @@ const Configuration &configuration() {
         if (headsetOutput())
             return {"sync-file", Transport::copy};
         if (selected == std::end(modes))
-            return invalid("V3_TRANSPORT", mode, "auto, direct, copy, peer, sdma, or ace");
+            return invalid("V3_TRANSPORT", mode, "auto, direct, copy, peer, or ace");
         const auto *clock = std::getenv("V3_VBLANK");
         if (clock && *clock && std::strcmp(clock, "virtual90") && std::strcmp(clock, "drm"))
             return invalid("V3_VBLANK", clock, "drm or virtual90");
@@ -400,6 +402,7 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
         uint32_t copyIndex = 0;
         bool privateCopy = false;
         const char *calibration = nullptr;
+        VkPhysicalDeviceDrmPropertiesEXT renderNode{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
         VkPhysicalDeviceSynchronization2Features sync2{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         VkPhysicalDeviceTimelineSemaphoreFeatures timeline{
@@ -437,13 +440,8 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
             const auto config = configuration();
             d->transport = config.mode;
             d->transportName = config.automatic ? "copy" : config.name;
-            VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-            VkPhysicalDeviceProperties2 extra{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-            if (config.automatic && (api >= VK_API_VERSION_1_2 ||
-                                     hasExtension(available, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME))) {
-                extra.pNext = &driver;
-            }
-            if (extra.pNext) {
+            if (headsetOutput() && hasExtension(available, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)) {
+                VkPhysicalDeviceProperties2 extra{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &renderNode};
                 auto query = d->vk.physicalFn<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2");
                 if (!query)
                     query = d->vk.physicalFn<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2KHR");
@@ -551,15 +549,15 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
             d->copyFamily = d->renderFamily;
             if (headsetOutput()) {
                 d->acquireFamily = d->renderFamily;
-                copyIndex = reserve(VK_QUEUE_TRANSFER_BIT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                // Vulkan compute queues can copy alongside later rendering.
+                copyIndex = reserve(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT,
                                     copyPriorities, d->copyFamily);
-                // Vulkan compute queues can run transfer commands. An independent
-                // queue lets an already composed image copy alongside later rendering.
-                if (copyIndex == UINT32_MAX)
-                    copyIndex = reserve(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT,
-                                        copyPriorities, d->copyFamily);
                 privateCopy = copyIndex != UINT32_MAX;
                 d->sharedCopy = !privateCopy;
+                std::fprintf(stderr, "wmr-v3: headset copy queue: mode=%s family=%u index=%u flags=%#x\n",
+                             privateCopy ? "compute" : "graphics",
+                             d->copyFamily, privateCopy ? copyIndex : 0u,
+                             unsigned(families[d->copyFamily].queueFlags));
             } else {
                 acquireIndex = reserve(VK_QUEUE_COMPUTE_BIT, 0, acquirePriorities, d->acquireFamily);
                 if (acquireIndex == UINT32_MAX)
@@ -569,23 +567,7 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
                     logQueueFamilies(families, queues);
                     throw std::runtime_error("No spare Vulkan queue for independent buffer acquisition");
                 }
-                if (config.mode == Transport::sdma ||
-                    (config.automatic && driver.driverID == VK_DRIVER_ID_MESA_RADV)) {
-                    copyIndex = reserve(VK_QUEUE_TRANSFER_BIT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
-                                        copyPriorities, d->copyFamily);
-                    if (copyIndex == UINT32_MAX) {
-                        if (!config.automatic) {
-                            logQueueFamilies(families, queues);
-                            throw std::runtime_error("SDMA mode needs a transfer-only queue on the render GPU");
-                        }
-                        std::fputs("wmr-v3: preflight transport: no spare RADV transfer-only queue, using graphics copy\n", stderr);
-                    } else {
-                        privateCopy = true;
-                        d->transport = Transport::sdma;
-                        d->transportName = "sdma";
-                        std::fprintf(stderr, "wmr-v3: transfer-only queue family %u index %u\n", d->copyFamily, copyIndex);
-                    }
-                } else if (config.mode == Transport::ace) {
+                if (config.mode == Transport::ace) {
                     privateCopy = true;
                     copyIndex = reserve(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT,
                                         copyPriorities, d->copyFamily);
@@ -596,8 +578,8 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
                     std::fprintf(stderr, "wmr-v3: compute-only copy queue family %u index %u\n",
                                  d->copyFamily, copyIndex);
                 }
-                std::fprintf(stderr, "wmr-v3: preflight transport: requested=%s resolved=%s Vulkan driver=%u\n",
-                             config.name, d->transportName, unsigned(driver.driverID));
+                std::fprintf(stderr, "wmr-v3: preflight transport: requested=%s resolved=%s\n",
+                             config.name, d->transportName);
             }
             request.queueCreateInfoCount = queues.size();
             request.pQueueCreateInfos = queues.data();
@@ -726,6 +708,8 @@ ENTRY VkResult VKAPI_CALL createDevice(VkPhysicalDevice physical, const VkDevice
                                  d->copyFamily, d->sharedCopy ? 0 : copyIndex,
                                  d->sharedCopy ? "compositor" : "independent Vulkan queue");
             }
+            if (renderNode.hasRender && renderNode.renderMajor >= 0 && renderNode.renderMinor >= 0)
+                d->profileLease = vrProfile::acquire(renderNode.renderMajor, renderNode.renderMinor);
             const std::unique_lock lock(objects);
             devices.emplace(dispatchKey(*out), d);
         } catch (...) {

@@ -5,15 +5,9 @@
 
 namespace steamvrPipewire {
 
-inline constexpr std::size_t serverSize = 5766112;
 inline constexpr std::size_t callbackOffset = 0x206e80;
 inline constexpr std::size_t unwindRangeOffset = 0x590e8;
-inline constexpr std::string_view stockSha256 =
-    "b43271509789097ca70b36b80cdd1b7f860c6ba692da93de169b7a1310f7a654";
-inline constexpr std::string_view repairedSha256 =
-    "9c38c8be417bf2ee489781bead3edfd5e5ca8a14c8b6b6a0e4860d1c86f26f97";
-
-// PipeWire reports property removal as a null value. This exact vrserver build
+// PipeWire reports property removal as a null value. The matched vrserver callback
 // forwards it to the audio default handler, which calls strstr on the value.
 // Route the entry through a guard in padding before the next function. Valid
 // events resume at the original key check, with the original stack and call.

@@ -1,5 +1,5 @@
 #pragma once
-// SVR-006: exact-build SteamVR staging-ring retirement. No game or bridge changes.
+// SVR-006: validated SteamVR staging-ring retirement. No game or bridge changes.
 #include <vulkan/vulkan.h>
 #include <sys/uio.h>
 #include <sys/syscall.h>

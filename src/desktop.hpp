@@ -16,7 +16,6 @@ struct DesktopFeedback {
     bool discarded{};
     bool targetOutput{};
     uint64_t sourceReadyNs{};
-    int dmaEngine{-1};
 };
 
 class FramePresenter {

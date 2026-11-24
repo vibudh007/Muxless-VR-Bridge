@@ -14,7 +14,6 @@
 #include <mutex>
 #include <unordered_map>
 #include <unistd.h>
-#include "tested_build.hpp"
 #include "descriptor_arena.hpp"
 #include "transfer_ring.hpp"
 #include "native_upload.hpp"
@@ -28,24 +27,45 @@ std::mutex mutex;
 std::unordered_map<void*,Instance> instances;
 std::unordered_map<void*,Device> devices;
 template<class T> void* key(T h){return *reinterpret_cast<void**>(h);}
-const BuildPolicy& buildPolicy(){
- static const BuildPolicy result=[]()->BuildPolicy{
-  char exe[4096];auto n=readlink("/proc/self/exe",exe,sizeof(exe)-1);
-  if(n<0||n>=ssize_t(sizeof(exe)-1))return {};
-  exe[n]=0;
-  const char*name=std::strrchr(exe,'/');if(!name||std::strcmp(name+1,"vrcompositor"))return {};
-  std::ifstream file("/proc/self/exe",std::ios::binary);
-  picosha2::hash256_one_by_one hash;char block[16384];
-  while(file){file.read(block,sizeof(block));hash.process(block,block+file.gcount());}
-  bool ok=file.eof();hash.finish();auto checksum=picosha2::get_hash_hex_string(hash);
-  const char*hex=checksum.c_str();
-  auto policy=ok?policyFor(hex):BuildPolicy{};
-  std::fprintf(stderr,"STEAMVR_PATCHES build=%s sha256=%s descriptors=%d transfer_ring=%d shader=%d\n",policy.any()?"matched":"unrecognized; inactive",ok?hex:"unavailable",policy.descriptors,policy.transferRing,policy.shader);return policy;
- }();return result;
+bool inCompositor(){
+ static const bool result=[](){
+  char path[4096];
+  auto count=readlink("/proc/self/exe",path,sizeof(path)-1);
+  if(count<0||count>=ssize_t(sizeof(path)-1))return false;
+  path[count]=0;
+  const char*name=std::strrchr(path,'/');
+  return name&&std::strcmp(name+1,"vrcompositor")==0;
+ }();
+ return result;
+}
+bool patchSelected(const char*filename){
+ if(!inCompositor())return false;
+ std::ifstream file(patchConfigDirectory()+"/"+filename);
+ std::string value;
+ std::getline(file,value);
+ return value=="1";
+}
+bool descriptorEnabled(){
+ static const bool enabled=patchSelected("descriptor-arena.enabled");
+ return enabled;
+}
+bool ringEnabled(){
+ static const bool enabled=patchSelected("transfer-ring.enabled");
+ return enabled;
 }
 bool observerEnabled(){
- if(!buildPolicy().observer)return false;
- static const bool value=[](){std::string dir=patchConfigDirectory();std::ifstream f(dir+"/descriptor-observer.enabled");std::string v;std::getline(f,v);return v=="1";}();return value;
+ static const bool enabled=[](){
+  if(!patchSelected("descriptor-observer.enabled"))return false;
+  // The optional diagnostic reads untagged native objects from unwind registers.
+  std::ifstream file("/proc/self/exe",std::ios::binary);
+  picosha2::hash256_one_by_one hash;
+  char block[16384];
+  while(file){file.read(block,sizeof(block));hash.process(block,block+file.gcount());}
+  if(!file.eof())return false;
+  hash.finish();
+  return picosha2::get_hash_hex_string(hash)=="7695e718ee0d070df596663d737b6a183aa650a2c66b90a035cc7f227a7a49e1";
+ }();
+ return enabled;
 }
 Instance instanceFor(VkPhysicalDevice h){std::lock_guard<std::mutex>lock(mutex);return instances.at(key(h));}
 Device deviceFor(VkDevice h){std::lock_guard<std::mutex>lock(mutex);return devices.at(key(h));}
@@ -146,7 +166,7 @@ std::unordered_map<void*,VkDevice> deviceHandles;
 VkDevice ringDevice(void*k){std::lock_guard<std::mutex>g(mutex);return deviceHandles.at(k);}
 VKAPI_ATTR VkResult VKAPI_CALL ringCreateBuffer(VkDevice h,const VkBufferCreateInfo*c,const VkAllocationCallbacks*a,VkBuffer*out){auto d=deviceFor(h);auto r=ringNext<PFN_vkCreateBuffer>(d,h,"vkCreateBuffer")(h,c,a,out);if(r==VK_SUCCESS&&d.ring)d.ring->created(*out,*c);return r;}
 VKAPI_ATTR VkResult VKAPI_CALL ringBindBuffer(VkDevice h,VkBuffer b,VkDeviceMemory m,VkDeviceSize o){auto d=deviceFor(h);auto r=ringNext<PFN_vkBindBufferMemory>(d,h,"vkBindBufferMemory")(h,b,m,o);if(r==VK_SUCCESS&&d.ring)d.ring->bound(b,m,o);return r;}
-VKAPI_ATTR VkResult VKAPI_CALL ringMap(VkDevice h,VkDeviceMemory m,VkDeviceSize o,VkDeviceSize z,VkMemoryMapFlags f,void**out){auto d=deviceFor(h);auto r=ringNext<PFN_vkMapMemory>(d,h,"vkMapMemory")(h,m,o,z,f,out);if(r==VK_SUCCESS&&d.ring){if(d.ring->mapped(m,o,z,out)&&buildPolicy().nativeUploads)nativeUpload::track(reinterpret_cast<uintptr_t>(out),d.ring);}return r;}
+VKAPI_ATTR VkResult VKAPI_CALL ringMap(VkDevice h,VkDeviceMemory m,VkDeviceSize o,VkDeviceSize z,VkMemoryMapFlags f,void**out){auto d=deviceFor(h);auto r=ringNext<PFN_vkMapMemory>(d,h,"vkMapMemory")(h,m,o,z,f,out);if(r==VK_SUCCESS&&d.ring){if(d.ring->mapped(m,o,z,out)&&nativeUpload::installed())nativeUpload::track(reinterpret_cast<uintptr_t>(out),d.ring);}return r;}
 VKAPI_ATTR void VKAPI_CALL ringDestroyBuffer(VkDevice h,VkBuffer b,const VkAllocationCallbacks*a){auto d=deviceFor(h);if(d.ring)d.ring->destroyed(b);ringNext<PFN_vkDestroyBuffer>(d,h,"vkDestroyBuffer")(h,b,a);}
 VKAPI_ATTR void VKAPI_CALL ringUnmap(VkDevice h,VkDeviceMemory m){auto d=deviceFor(h);if(d.ring)d.ring->unmapped(m);ringNext<PFN_vkUnmapMemory>(d,h,"vkUnmapMemory")(h,m);}
 VKAPI_ATTR VkResult VKAPI_CALL ringBegin(VkCommandBuffer c,const VkCommandBufferBeginInfo*i){auto d=commandDevice(c);auto h=ringDevice(key(c));auto r=ringNext<PFN_vkBeginCommandBuffer>(d,h,"vkBeginCommandBuffer")(c,i);if(r==VK_SUCCESS&&d.ring)d.ring->begin(c);return r;}
@@ -182,17 +202,16 @@ VKAPI_ATTR VkResult VKAPI_CALL ringSubmit(VkQueue q,uint32_t n,const VkSubmitInf
  return result;
 }
 PFN_vkVoidFunction observationHook(const char*n){
- const auto&policy=buildPolicy();
- if(!policy.any())return nullptr;
- if(policy.shader)if(auto shader=ShaderAdapter::hook(n))return shader;
+ if(!inCompositor())return nullptr;
+ if(auto shader=ShaderAdapter::hook(n))return shader;
  #define OBS(name,fn) if(!std::strcmp(n,name))return reinterpret_cast<PFN_vkVoidFunction>(fn)
- if(policy.transferRing){
+ if(ringEnabled()){
  OBS("vkCreateBuffer",ringCreateBuffer);OBS("vkBindBufferMemory",ringBindBuffer);OBS("vkMapMemory",ringMap);OBS("vkDestroyBuffer",ringDestroyBuffer);OBS("vkUnmapMemory",ringUnmap);
  OBS("vkFreeMemory",ringFreeMemory);OBS("vkQueueSubmit2",ringSubmit2);OBS("vkQueueSubmit2KHR",ringSubmit2KHR);OBS("vkCmdCopyBuffer2",ringCopy2);OBS("vkCmdCopyBuffer2KHR",ringCopy2KHR);OBS("vkCmdCopyBufferToImage2",ringImage2);OBS("vkCmdCopyBufferToImage2KHR",ringImage2KHR);
  OBS("vkAllocateCommandBuffers",ringAllocateCommands);OBS("vkFreeCommandBuffers",ringFreeCommands);OBS("vkResetCommandBuffer",ringResetCommands);OBS("vkResetCommandPool",ringResetCommandPool);OBS("vkDestroyCommandPool",ringDestroyCommandPool);
  OBS("vkBeginCommandBuffer",ringBegin);OBS("vkEndCommandBuffer",ringEnd);OBS("vkCmdCopyBuffer",ringCopy);OBS("vkCmdCopyBufferToImage",ringImage);OBS("vkQueueSubmit",ringSubmit);OBS("vkCmdExecuteCommands",ringExecute);
  }
- if(policy.descriptors){
+ if(descriptorEnabled()){
  if(observerEnabled()){OBS("vkCreateImageView",createView);OBS("vkDestroyImageView",destroyView);OBS("vkUpdateDescriptorSets",updateSets);}
  OBS("vkCreateDescriptorPool",createPool);OBS("vkAllocateDescriptorSets",allocate);OBS("vkFreeDescriptorSets",freeSets);OBS("vkResetDescriptorPool",resetPool);OBS("vkDestroyDescriptorPool",destroyPool);
  }
@@ -219,21 +238,20 @@ VKAPI_ATTR VkResult VKAPI_CALL createDevice(VkPhysicalDevice h,const VkDeviceCre
  auto gipa=chain->u.pLayerInfo->pfnNextGetInstanceProcAddr;auto gdpa=chain->u.pLayerInfo->pfnNextGetDeviceProcAddr;chain->u.pLayerInfo=chain->u.pLayerInfo->pNext;
  auto state=instanceFor(h);auto result=reinterpret_cast<PFN_vkCreateDevice>(gipa(state.handle,"vkCreateDevice"))(h,c,a,out);
  if(result==VK_SUCCESS){Device d{gdpa,reinterpret_cast<PFN_vkCreateDescriptorPool>(gdpa(*out,"vkCreateDescriptorPool")),reinterpret_cast<PFN_vkDestroyDevice>(gdpa(*out,"vkDestroyDevice"))};
-  if(buildPolicy().descriptors){
-   std::string dir=patchConfigDirectory();
-   std::ifstream enabled(dir+"/descriptor-arena.enabled");std::string value;std::getline(enabled,value);
-   if(value=="1")d.arena=std::make_shared<DescriptorArena>(DescriptorArena::Driver{*out,d.createPool,reinterpret_cast<PFN_vkDestroyDescriptorPool>(gdpa(*out,"vkDestroyDescriptorPool")),reinterpret_cast<PFN_vkAllocateDescriptorSets>(gdpa(*out,"vkAllocateDescriptorSets")),reinterpret_cast<PFN_vkFreeDescriptorSets>(gdpa(*out,"vkFreeDescriptorSets")),reinterpret_cast<PFN_vkResetDescriptorPool>(gdpa(*out,"vkResetDescriptorPool"))});
+  if(descriptorEnabled()){
+   d.arena=std::make_shared<DescriptorArena>(DescriptorArena::Driver{*out,d.createPool,reinterpret_cast<PFN_vkDestroyDescriptorPool>(gdpa(*out,"vkDestroyDescriptorPool")),reinterpret_cast<PFN_vkAllocateDescriptorSets>(gdpa(*out,"vkAllocateDescriptorSets")),reinterpret_cast<PFN_vkFreeDescriptorSets>(gdpa(*out,"vkFreeDescriptorSets")),reinterpret_cast<PFN_vkResetDescriptorPool>(gdpa(*out,"vkResetDescriptorPool"))});
   }
-  if(buildPolicy().transferRing){
-   std::string dir=patchConfigDirectory();
-   std::ifstream enabled(dir+"/transfer-ring.enabled");std::string value;std::getline(enabled,value);
-   if(value=="1"){
-    VkPhysicalDeviceMemoryProperties memory{};reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(gipa(state.handle,"vkGetPhysicalDeviceMemoryProperties"))(h,&memory);
-    d.ring=std::make_shared<TransferRing>(TransferRing::Driver{*out,gdpa,memory});
-    if(buildPolicy().nativeUploads&&!nativeUpload::install())std::fprintf(stderr,"STEAMVR_RING native spill unavailable; legacy retirement only\n");
-   }
+  if(ringEnabled()){
+   VkPhysicalDeviceMemoryProperties memory{};
+   reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(gipa(state.handle,"vkGetPhysicalDeviceMemoryProperties"))(h,&memory);
+   d.ring=std::make_shared<TransferRing>(TransferRing::Driver{*out,gdpa,memory});
+   if(!nativeUpload::install())std::fprintf(stderr,"STEAMVR_RING uploader signature not recognized; retirement only\n");
   }
-  if(buildPolicy().shader&&ShaderAdapter::enabled()){
+  const bool shader=inCompositor()&&ShaderAdapter::enabled();
+  if(inCompositor())
+   std::fprintf(stderr,"STEAMVR_PATCHES descriptors=%d transfer_ring=%d shader=%d native_upload=%d\n",
+                bool(d.arena),bool(d.ring),shader,bool(d.ring)&&nativeUpload::installed());
+  if(shader){
    try{ShaderAdapter::registerDevice(*out,gdpa);}catch(const std::bad_alloc&){d.destroy(*out,a);*out=VK_NULL_HANDLE;return VK_ERROR_OUT_OF_HOST_MEMORY;}
   }
   std::lock_guard<std::mutex>lock(mutex);devices[key(*out)]=d;deviceHandles[key(*out)]=*out;

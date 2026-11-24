@@ -6,7 +6,7 @@ assert ('#define MUXLESS_VR_BRIDGE_VERSION \"'+version+'\"') in (root/'shim/vers
 dist=root/'shim/dist';dist.mkdir(parents=True,exist_ok=True)
 staging=tempfile.TemporaryDirectory(dir=dist)
 app=Path(staging.name)/'Muxless-VR-Bridge.AppDir';(app/'usr/bin').mkdir(parents=True);(app/'usr/lib').mkdir()
-for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe']:
+for name in ['wmr-gpu-bridge','muxless-vr-bridge-manager','muxless-vr-bridge-probe','muxless-vr-profile']:
  shutil.copy2(root/'shim/build-portable'/name,app/'usr/bin'/name)
 for library in ['libmuxless_vr_bridge.so', 'libsteamvr_runtime_patches.so']:
  shutil.copy2(root/'shim/build-portable'/library,app/'usr/lib'/library)

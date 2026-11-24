@@ -5,12 +5,14 @@
 
 namespace steamvrRoomSetup {
 
-inline constexpr std::size_t assemblySize = 445952;
 inline constexpr std::size_t quitMethodOffset = 0x10de9;
-inline constexpr std::string_view stockSha256 =
-    "c717cbc9c459e09a5074afe465acedb2043c9c4eeb7241a5784055cf017f4980";
-inline constexpr std::string_view repairedSha256 =
-    "8adb45c05f396616819d3433abd49fc2704a96b3ee1bf39d26d2eda4960b2ca2";
+// Pin the IL token and string tables used by the replacement method body.
+inline constexpr std::size_t tokenTableOffset = 0x263d0, tokenTableSize = 147132;
+inline constexpr std::size_t stringTableOffset = 0x4a28c, stringTableSize = 90944;
+inline constexpr std::string_view tokenTableSha256 =
+    "1e0ff4638b0e47e6fc5f4bce24d68238ae383c7ee2e932b28c4a3390dc5ac619";
+inline constexpr std::string_view stringTableSha256 =
+    "b1e0c8e7aedbcea650d04b167dd351417b4882f13b1c37bba88c199324169475";
 
 // Valve.VR.InteractionSystem.Util.Quit, including the tiny method header.
 // Replace Process.GetCurrentProcess().Kill() with UnityEngine.Application.Quit().

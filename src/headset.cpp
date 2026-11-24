@@ -7,7 +7,6 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -84,33 +83,6 @@ uint64_t readyTime(int fd) {
     for (uint32_t i = 0; i < info.num_fences; ++i)
         ready = std::max(ready, uint64_t(fences[i].timestamp_ns));
     return ready;
-}
-
-int pendingDmaEngine(int fd) {
-    std::array<sync_fence_info, 16> fences{};
-    sync_file_info info{};
-    info.num_fences = fences.size();
-    info.sync_fence_info = reinterpret_cast<uintptr_t>(fences.data());
-    if (ioctl(fd, SYNC_IOC_FILE_INFO, &info) || info.num_fences > fences.size())
-        return -1;
-    int engine = -1;
-    for (uint32_t i = 0; i < info.num_fences; ++i) {
-        const auto &fence = fences[i];
-        const auto &name = fence.obj_name;
-        const auto end = std::find(name, name + sizeof(name), '\0');
-        constexpr char prefix[] = "sdma";
-        constexpr auto prefixSize = sizeof(prefix) - 1;
-        if (fence.status != 0 || end <= name + prefixSize || std::memcmp(name, prefix, prefixSize))
-            continue;
-        int index = -1;
-        const auto parsed = std::from_chars(name + prefixSize, end, index);
-        if (parsed.ec != std::errc{} || parsed.ptr != end || index < 0)
-            continue;
-        if (engine >= 0 && engine != index)
-            return -1;
-        engine = index;
-    }
-    return engine;
 }
 
 } // namespace
@@ -304,7 +276,6 @@ struct HeadsetPresenter::Impl {
         int slot{-1};
         uint64_t frameId{}, submittedNs{};
         int fence{-1};
-        int dmaEngine{-1};
     };
     struct VblankRequest {
         std::shared_ptr<DisplayEvent> event;
@@ -323,7 +294,7 @@ struct HeadsetPresenter::Impl {
     std::condition_variable changed;
     std::thread reader;
     const uint64_t flipCookie{eventCookie()};
-    bool active{}, lost{}, retiring{}, stopping{}, keepScanout{}, traceReady{}, traceDmaEngine{};
+    bool active{}, lost{}, retiring{}, stopping{}, keepScanout{}, traceReady{};
     int displayed{-1};
     Flip pending;
     std::vector<DesktopFeedback> feedback;
@@ -336,6 +307,7 @@ struct HeadsetPresenter::Impl {
     void open(int leaseFd, uint32_t id, const drmModeModeInfo &);
     void select(uint32_t fb, uint32_t fourcc);
     int commit(uint32_t fb, int fence, uint32_t flags, bool setMode, bool disable = false);
+    void removeFramebuffer(Slot &) noexcept;
     void clear(Slot &) noexcept;
     void disable() noexcept;
     void stopReader();
@@ -366,8 +338,6 @@ void HeadsetPresenter::Impl::open(int leaseFd, uint32_t id, const drmModeModeInf
     const auto *trace = std::getenv("V3_TRACE");
     const auto *copyTrace = std::getenv("V3_COPY_TIMING");
     traceReady = (trace && *trace) || (copyTrace && *copyTrace);
-    const auto *engineTrace = std::getenv("V3_DMA_ENGINE_TRACE");
-    traceDmaEngine = engineTrace && !std::strcmp(engineTrace, "1");
     if (!headsetRefresh(timing))
         throw std::runtime_error("Cannot use the selected DRM mode for headset pacing");
     mode = timing;
@@ -450,19 +420,29 @@ int HeadsetPresenter::Impl::commit(uint32_t fb, int fence, uint32_t flags, bool 
                                reinterpret_cast<void *>(uintptr_t(flipCookie)));
 }
 
+void HeadsetPresenter::Impl::removeFramebuffer(Slot &slot) noexcept {
+    if (!slot.fb)
+        return;
+    const int status = drmModeRmFB(drm.value, slot.fb);
+    const int error = status ? drmFailureCode(status) : 0;
+    if (!error || error == ENOENT) {
+        slot.fb = 0;
+        return;
+    }
+    std::fprintf(stderr, "wmr-v3: remove headset framebuffer %u failed: %s (%d)\n",
+                 slot.fb, std::strerror(error), error);
+}
+
 void HeadsetPresenter::Impl::clear(Slot &slot) noexcept {
-    if (slot.fb) {
+    const bool preserve = keepScanout &&
+        ((displayed >= 0 && &slot == &slots[displayed]) ||
+         (pending.slot >= 0 && &slot == &slots[pending.slot]));
+    if (slot.fb && preserve) {
         // Older libdrm headers lack CLOSEFB even on a kernel that supports it.
         struct CloseFramebuffer { uint32_t id, padding; } request{slot.fb, 0};
-        const int status = drmIoctl(drm.value, DRM_IOWR(0xD0, CloseFramebuffer), &request);
-        if (status) {
-            const int error = drmFailureCode(status);
-            const bool scanout = keepScanout &&
-                ((displayed >= 0 && &slot == &slots[displayed]) ||
-                 (pending.slot >= 0 && &slot == &slots[pending.slot]));
-            if (!scanout && (error == EINVAL || error == ENOTTY || error == EOPNOTSUPP))
-                drmModeRmFB(drm.value, slot.fb);
-        }
+        drmIoctl(drm.value, DRM_IOWR(0xD0, CloseFramebuffer), &request);
+    } else {
+        removeFramebuffer(slot);
     }
     if (slot.gem && std::none_of(slots.begin(), slots.end(), [&](const Slot &other) {
             return &slot != &other && slot.gem == other.gem;
@@ -489,13 +469,26 @@ void HeadsetPresenter::Impl::stopReader() {
 }
 
 void HeadsetPresenter::Impl::disable() noexcept {
-    if (active && pending.slot < 0) {
-        try {
-            commit(0, -1, DRM_MODE_ATOMIC_ALLOW_MODESET, false, true);
-        } catch (...) {
-            // An unplugged or revoked lease is already inaccessible.
-        }
+    if (!active)
+        return;
+    active = false;
+    try {
+        // The blocking modeset orders shutdown after an outstanding page flip.
+        int status;
+        do {
+            status = commit(0, -1, DRM_MODE_ATOMIC_ALLOW_MODESET, false, true);
+        } while (status && drmFailureCode(status) == EINTR);
+        check(status, "Disable headset scanout");
+        std::fprintf(stderr, "wmr-v3: headset scanout disabled connector=%u CRTC=%u\n",
+                     connector, crtc);
+        return;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "wmr-v3: headset shutdown connector=%u CRTC=%u: %s; removing framebuffers\n",
+                     connector, crtc, error.what());
     }
+    // CLOSEFB leaves a framebuffer on an active plane. RMFB also detaches it.
+    for (auto &slot : slots)
+        removeFramebuffer(slot);
 }
 
 HeadsetPresenter::Impl::~Impl() {
@@ -524,7 +517,6 @@ void HeadsetPresenter::Impl::flipped(uint32_t sequence, uint64_t timestamp) noex
         DesktopFeedback sample{pending.frameId, pending.submittedNs, timestamp, sequence,
                                refreshNs, 15, false, true};
         sample.sourceReadyNs = readyTime(fence.value);
-        sample.dmaEngine = pending.dmaEngine;
         feedback.push_back(sample);
         ++generation;
         if (pending.frameId == 1)
@@ -620,10 +612,8 @@ void HeadsetPresenter::retire(bool keepScanout) {
     // Leave the last framebuffer on the leased CRTC until the replacement takes over.
     const std::lock_guard lock(s.mutex);
     s.keepScanout = keepScanout;
-    if (!keepScanout) {
+    if (!keepScanout)
         s.disable();
-        s.active = false;
-    }
 }
 
 uint32_t HeadsetPresenter::addBuffer(int dmaBufFd, uint32_t width, uint32_t height, uint32_t fourcc,
@@ -684,13 +674,11 @@ void HeadsetPresenter::presentSyncFile(uint32_t index, uint64_t point, uint64_t 
     try {
         const auto flags = DRM_MODE_PAGE_FLIP_EVENT |
                            (s.active ? DRM_MODE_ATOMIC_NONBLOCK : DRM_MODE_ATOMIC_ALLOW_MODESET);
-        // Linux replaces the physical scheduler name once the fence signals.
-        const auto engine = s.traceDmaEngine && syncFileFd >= 0 ? pendingDmaEngine(syncFileFd) : -1;
         const auto submitted = monotonicNs();
         check(s.commit(slot.fb, syncFileFd, flags, !s.active), "Commit headset framebuffer");
         traceWsi("flip_commit", frameId, index, point, submitted);
         const int traceFence = s.traceReady && syncFileFd >= 0 ? fcntl(syncFileFd, F_DUPFD_CLOEXEC, 0) : -1;
-        s.pending = {int(index), frameId, submitted, traceFence, engine};
+        s.pending = {int(index), frameId, submitted, traceFence};
         s.active = true;
         slot.point = point;
     } catch (...) {

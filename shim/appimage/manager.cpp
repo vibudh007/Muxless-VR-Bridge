@@ -48,7 +48,7 @@ static json managedManifest(const fs::path&libdir){
  // The upload repair must only observe compositor submissions, not the bridge's private transfers.
  return {{"file_format_version","1.2.0"},{"layers",json::array({
   layer("VK_LAYER_MUXLESS_steamvr_patches","libsteamvr_runtime_patches.so","1.3.0","2",
-        "MUXLESS_STEAMVR_PATCHES","DISABLE_MUXLESS_STEAMVR_PATCHES","Independent verified-build SteamVR repairs"),
+        "MUXLESS_STEAMVR_PATCHES","DISABLE_MUXLESS_STEAMVR_PATCHES","Independent SteamVR repairs with operation checks"),
   layer("VK_LAYER_MUXLESS_bridge","libmuxless_vr_bridge.so","1.4.0","3",
         "V3_ENABLE_LAYER","DISABLE_MUXLESS_VR_BRIDGE","Muxless VR Bridge display transport")
  })}};
@@ -128,7 +128,7 @@ static json runtimeStatus(const fs::path&proc="/proc"){
    enabled|=entry=="V3_ENABLE_LAYER=1";
    if(entry.rfind("V3_TRANSPORT=",0)==0){
     const auto mode=entry.substr(sizeof("V3_TRANSPORT=")-1);
-    transport=mode=="auto"||mode=="copy"||mode=="sdma"||mode=="ace"||mode=="direct"||mode=="peer";
+    transport=mode=="auto"||mode=="copy"||mode=="ace"||mode=="direct"||mode=="peer";
    }
    output|=entry=="V3_OUTPUT=headset"||entry=="V3_OUTPUT=desktop";
    disabled|=entry=="DISABLE_MUXLESS_VR_BRIDGE=1";
@@ -147,6 +147,10 @@ static json runtimeStatus(const fs::path&proc="/proc"){
 }
 
 static bool under(const fs::path&p,const fs::path&root){auto relative=fs::weakly_canonical(p).lexically_relative(fs::weakly_canonical(root));return !relative.empty()&&*relative.begin()!="..";}
+static bool profileHelperAuthorized(const fs::path&path){
+ struct stat st{};
+ return !lstat(path.c_str(),&st)&&S_ISREG(st.st_mode)&&st.st_uid==0&&(st.st_mode&S_ISUID)&&!(st.st_mode&0022);
+}
 static bool verifyPayload(){auto root=appDir();auto payload=readJson(root/"payload.json");if(!payload.contains("files"))throw std::runtime_error("Payload manifest missing; use the AppImage to install");for(auto&file:payload["files"]){auto path=root/file["path"].get<std::string>();if(!under(path,root)||digest(path)!=file["sha256"].get<std::string>())throw std::runtime_error("Payload integrity check failed: "+path.string());}return true;}
 
 struct LaunchSlot {size_t start=0,end=0,insert=0;std::string value;bool found=false,app=false;};
@@ -285,24 +289,38 @@ struct RepairSpan {
 };
 struct SteamVRFileRepair {
  const char *command, *description, *relativePath;
- size_t size;
- std::string_view stockHash, repairedHash;
  std::initializer_list<RepairSpan> spans;
 };
 static constexpr SteamVRFileRepair roomSetupRepair{
  "--room-setup-fix", "Room Setup assembly",
  "tools/steamvr_room_setup/linux64/steamvr_room_setup_Data/Managed/Assembly-CSharp.dll",
- steamvrRoomSetup::assemblySize,
- steamvrRoomSetup::stockSha256, steamvrRoomSetup::repairedSha256,
  {{steamvrRoomSetup::quitMethodOffset, steamvrRoomSetup::stockQuit, steamvrRoomSetup::repairedQuit}}
 };
 static constexpr SteamVRFileRepair pipewireAudioRepair{
  "--pipewire-audio-fix", "PipeWire audio metadata handler", "bin/linux64/vrserver",
- steamvrPipewire::serverSize,
- steamvrPipewire::stockSha256, steamvrPipewire::repairedSha256,
  {{steamvrPipewire::callbackOffset, steamvrPipewire::stockCallback, steamvrPipewire::repairedCallback},
   {steamvrPipewire::unwindRangeOffset, steamvrPipewire::stockUnwindRange, steamvrPipewire::repairedUnwindRange}}
 };
+
+static bool repairLayoutMatches(const SteamVRFileRepair& repair, std::string_view bytes) {
+ if (&repair == &pipewireAudioRepair)
+  return bytes.substr(0, 6) == std::string_view("\x7f" "ELF\x02\x01", 6);
+ if (bytes.substr(0, 2) != "MZ") return false;
+ using namespace steamvrRoomSetup;
+ const auto matches = [&](size_t offset, size_t size, std::string_view expected) {
+  return offset <= bytes.size() && size <= bytes.size() - offset &&
+         picosha2::hash256_hex_string(std::string(bytes.substr(offset, size))) == expected;
+ };
+ return matches(tokenTableOffset, tokenTableSize, tokenTableSha256) &&
+        matches(stringTableOffset, stringTableSize, stringTableSha256);
+}
+
+static bool repairSpansMatch(const SteamVRFileRepair& repair, std::string_view bytes, bool repaired) {
+ return std::all_of(repair.spans.begin(), repair.spans.end(), [&](const RepairSpan& span) {
+  const auto expected = repaired ? span.repaired : span.stock;
+  return span.offset <= bytes.size() && bytes.substr(span.offset, expected.size()) == expected;
+ });
+}
 
 static json repairSteamVRFile(const SteamVRFileRepair& repair, const std::string& action) {
  const bool apply = action == "apply", restore = action == "restore";
@@ -318,17 +336,18 @@ static json repairSteamVRFile(const SteamVRFileRepair& repair, const std::string
    if (!processes(name).empty()) throw std::runtime_error("Close Room Setup and SteamVR before changing this repair");
  }
  const auto properties = fs::symlink_status(path);
- if (!fs::is_regular_file(properties) || fs::file_size(path) != repair.size)
+ if (!fs::is_regular_file(properties))
   throw std::runtime_error(std::string("Missing or unsupported ") + repair.description + ": " + path.string());
  const auto before = read(path);
  const auto hash = picosha2::hash256_hex_string(before);
- const bool stock = hash == repair.stockHash, repaired = hash == repair.repairedHash;
+ const bool compatible = repairLayoutMatches(repair, before);
+ const bool stock = compatible && repairSpansMatch(repair, before, false);
+ const bool repaired = compatible && repairSpansMatch(repair, before, true);
  if (action == "status")
   return {{"state", stock ? "stock" : repaired ? "repaired" : "unsupported"}, {"path", path.string()}, {"sha256", hash}};
  if (!stock && !repaired)
-  throw std::runtime_error(std::string("Unsupported ") + repair.description + " SHA-256 " + hash + " at " + path.string());
- const auto expectedHash = apply ? repair.repairedHash : repair.stockHash;
- if (hash == expectedHash)
+  throw std::runtime_error(std::string("Unsupported ") + repair.description + " instructions or metadata at " + path.string());
+ if ((apply && repaired) || (restore && stock))
   return {{"state", apply ? "repaired" : "stock"}, {"path", path.string()}, {"changed", false}, {"sha256", hash}};
  auto after = before;
  for (const auto& span : repair.spans) {
@@ -338,10 +357,10 @@ static json repairSteamVRFile(const SteamVRFileRepair& repair, const std::string
    throw std::runtime_error(std::string(repair.description) + " did not match the expected bytes");
   after.replace(span.offset, source.size(), target);
  }
- if (picosha2::hash256_hex_string(after) != expectedHash)
-  throw std::runtime_error("SteamVR repair output did not match the expected SHA-256");
+ if (!repairLayoutMatches(repair, after) || !repairSpansMatch(repair, after, apply))
+  throw std::runtime_error("SteamVR repair output did not match the expected instructions or metadata");
  replaceRepairFile(path, before, after);
- return {{"state", apply ? "repaired" : "stock"}, {"path", path.string()}, {"changed", true}, {"sha256", std::string(expectedHash)}};
+ return {{"state", apply ? "repaired" : "stock"}, {"path", path.string()}, {"changed", true}, {"sha256", picosha2::hash256_hex_string(after)}};
 }
 
 static fs::path steamDesktop(){return xdg("XDG_DATA_HOME",prefix()/"share")/"applications/wmr-gpu-bridge-steam.desktop";}
@@ -379,7 +398,7 @@ static bool ownedFile(const fs::path& p,fs::file_status status,const json& f){
 struct Patch {const char*id;const char*name;const char*file;const char*purpose;};
 static const Patch patches[]={
  {"001","Descriptor cache ownership","descriptor-arena.enabled","Prevents descriptor-pool exhaustion; owns, frees and reclaims backing allocations."},
- {"002","Shader/layout compatibility","shader-compat.enabled","Repairs the recognized incompatible SteamVR shader/layout; applies only to the verified 2.19.2 executable."},
+ {"002","Shader/layout compatibility","shader-compat.enabled","Repairs the recognized incompatible SteamVR shader and layout when present."},
  {"006","Upload staging retirement","transfer-ring.enabled","Retires completed uploads safely, preventing staging-buffer exhaustion and related compositor crashes."}
 };
 static fs::path patchDirectory(){return prefix()/"lib/wmr-gpu-bridge/patches";}
@@ -417,7 +436,7 @@ static json togglePatches(std::string target){
   write(receiptFile,receipt.dump(2)+"\n");write(path,text);found->erase("previous_sha256");
   write(receiptFile,receipt.dump(2)+"\n");changes.push_back({{"id",p.id},{"name",p.name},{"selected",enabled}});
  }
- return {{"patches",changes},{"restart_required",true},{"note","Changes take effect on the next SteamVR launch; verified-build guards remain enforced."}};
+ return {{"patches",changes},{"restart_required",true},{"note","Changes take effect on the next SteamVR launch; patch-specific compatibility checks remain enforced."}};
 }
 static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();for(const auto&c:preflight["checks"])if(c["level"]=="error")throw std::runtime_error("Preflight: "+c["name"].get<std::string>()+": "+c["detail"].get<std::string>()+"; run --doctor for the full report");if(!processes("vrcompositor").empty()||!processes("vrserver").empty())throw std::runtime_error("Close SteamVR before installing/upgrading");
  legacyShaderFiles();
@@ -464,10 +483,12 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
   if(old!=files.end()&&old->second.value("sha256","")!=hash)owned["previous_sha256"]=old->second["sha256"];
   files[path.string()]=owned;persistReceipt();
  };
- std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/lib/libsteamvr_runtime_patches.so",libdir/"libsteamvr_runtime_patches.so"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"}};
+ std::vector<std::pair<fs::path,fs::path>>copies={{root/"usr/lib/libmuxless_vr_bridge.so",libdir/"libmuxless_vr_bridge.so"},{root/"usr/lib/libsteamvr_runtime_patches.so",libdir/"libsteamvr_runtime_patches.so"},{root/"usr/bin/wmr-gpu-bridge",prefix()/"bin/wmr-gpu-bridge"},{root/"usr/bin/muxless-vr-bridge-manager",libdir/"muxless-vr-bridge-manager"},{root/"usr/bin/muxless-vr-bridge-probe",libdir/"muxless-vr-bridge-probe"},{root/"usr/bin/muxless-vr-profile",libdir/"muxless-vr-profile"}};
  for(auto&pair:copies){
-  record(pair.second,digest(pair.first));
-  copyManaged(pair.first,pair.second);
+  const auto hash=digest(pair.first);
+  const bool keepAuthorized=pair.second.filename()=="muxless-vr-profile"&&profileHelperAuthorized(pair.second)&&digest(pair.second)==hash;
+  record(pair.second,hash);
+  if(!keepAuthorized)copyManaged(pair.first,pair.second);
  }
  auto manifest=managedManifest(libdir);
  for(const auto&p:patches){
@@ -482,8 +503,7 @@ static json install(){verifyPayload();ManagerLock lock;auto preflight=doctor();f
  auto launchChanges=configureSteam();
  for(auto it=files.begin();it!=files.end();){
   fs::path path=it->first;
-  const bool retiredProfile=path==libdir/"muxless-vr-profile";
-  if(under(path,prefix()/"lib/wmr-gpu-bridge")&&(retiredProfile||(!under(path,libdir)&&!under(path,patchDirectory())))){
+  if(under(path,prefix()/"lib/wmr-gpu-bridge")&&!under(path,libdir)&&!under(path,patchDirectory())){
    auto status=fs::symlink_status(path);
    if(status.type()==fs::file_type::not_found||ownedFile(path,status,it->second)){
     if(status.type()!=fs::file_type::not_found)fs::remove(path);
@@ -505,6 +525,10 @@ static json verify(){json report={{"checks",json::array()},{"runtime",runtimeSta
  check(report,"Vulkan registration",correctRegistration?"ok":"error",correctRegistration?
        "Bridge activation and repair layer order match the package":"Managed layer registration differs from this package; rerun --install");
  for(const auto&layer:layers){auto library=layer.value("library_path","");void*handle=dlopen(library.c_str(),RTLD_NOW|RTLD_LOCAL);bool ok=handle&&dlsym(handle,"vkNegotiateLoaderLayerInterfaceVersion");check(report,layer.value("name","layer"),ok?"ok":"error",ok?"library dependencies resolve and loader entry point exists":(handle?"entry point missing":dlerror()));if(handle)dlclose(handle);}
+ const auto helper=libraryDirectory()/"muxless-vr-profile";
+ const bool authorized=profileHelperAuthorized(helper);
+ check(report,"VR workload profile helper",authorized?"ok":"warn",authorized?
+       "Authorized for driver-advertised VR mode":"Optional helper authorization is missing; see runtime/README.md");
  verifySteamLaunch(report);return report;}
 // Removal protocol 1: schema-1 receipts remain readable by legacy AppImages.
 // New metadata is additive; paths and receipt order are part of the ABI.

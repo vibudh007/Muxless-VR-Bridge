@@ -41,15 +41,15 @@ The AppImage bundles three optional repairs in a separate SteamVR patch layer. F
 
 ### 1 — Descriptor cache ownership
 
-**Problem:** On the verified SteamVR builds, dashboard content and other compositor activity can exhaust a Vulkan descriptor pool. Descriptors tell shaders which images and buffers to use. When the compositor's fixed pool runs out, a failed allocation can crash SteamVR.
+**Problem:** Dashboard content and other compositor activity can exhaust a Vulkan descriptor pool. Descriptors tell shaders which images and buffers to use. When the compositor's fixed pool runs out, a failed allocation can crash SteamVR.
 
 **Repair:** The patch tracks which backing pool owns each descriptor set, adds backing pools when the affected allocation needs capacity, and routes frees, resets and destruction to the correct owners. It also reclaims empty backing pools. This manages the allocation lifecycle rather than permanently inflating every pool or discarding live allocations.
 
 ### 2 — Shader/layout compatibility
 
-**Problem:** The verified SteamVR 2.19.2 executable contains a shader/pipeline-layout combination with an incompatible uniform-buffer access. On the tested graphics stack, it can crash the compositor soon after the first frame or when displaying overlays.
+**Problem:** Some SteamVR shaders use a pipeline layout with an incompatible uniform-buffer access. On the tested graphics stack, it can crash the compositor soon after the first frame or when displaying overlays.
 
-**Repair:** The patch recognizes that specific shader and incompatible layout, then adapts the shader during pipeline construction. It does not rewrite unrelated shaders or run a shader-repair pass on every frame. This repair is eligible only for the verified **2.19.2** binary; it stays inactive on **2.19.3**.
+**Repair:** The patch recognizes that specific shader and incompatible layout, then adapts the shader during pipeline construction. It does not rewrite unrelated shaders or run a shader-repair pass on every frame.
 
 ### 3 — Upload staging retirement
 
@@ -59,13 +59,13 @@ The AppImage bundles three optional repairs in a separate SteamVR patch layer. F
 
 ### Supported builds and safeguards
 
-Patches 1 and 3 are eligible for the verified SteamVR **2.19.2 and 2.19.3** compositor executables. Patch 2 is eligible only for the verified **2.19.2** executable. Eligibility uses the executable's full SHA-256, not just its displayed version. Unknown or updated binaries pass through without these build-dependent repairs until reviewed. This prevents an old repair from blindly modifying a new upstream implementation; it does not automatically determine whether every upstream bug is fixed.
+The Vulkan repairs activate in the SteamVR compositor according to your selections. Descriptor repair follows Vulkan pool operations. Shader and staging repairs check the specific shader, allocator or uploader they are about to use. The standalone executable repairs verify their target instructions and metadata before writing. Oasis discovery checks for the installed driver and requires no version.
 
-See [patch applicability](patches/steamvr/README.md) for the exact allowlist.
+See [patch applicability](patches/steamvr/README.md) for details.
 
 ### How to use the patches
 
-Installation selects all three repairs by default. Your selections are preserved across upgrades; a selected repair runs only on an eligible executable. Disabling a required repair can reintroduce crashes.
+Installation selects all three repairs by default. Your selections are preserved across upgrades; a selected repair intervenes when it recognizes the affected operation. Disabling a required repair can reintroduce crashes.
 
 Show each patch's purpose, ID and current selection:
 

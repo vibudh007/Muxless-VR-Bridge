@@ -427,7 +427,7 @@ void FrameRing::Impl::initialize(const VkSwapchainCreateInfoKHR &ci, Transport k
                                  std::to_string(ci.compositeAlpha) + ", mode " +
                                  std::to_string(ci.presentMode) + ")");
     const auto drmFormat = fourcc(ci.imageFormat);
-    const bool privateCopy = kind == Transport::sdma || kind == Transport::ace;
+    const bool privateCopy = kind == Transport::ace;
     if (!privateQueueMutex || (forHeadset ? (q || !dmaQueue) : !q) ||
         (privateCopy && !dmaQueue) || (!dmaQueue && copyFamily != renderFamily) ||
         (forHeadset && kind != Transport::copy && !privateCopy))
@@ -547,7 +547,7 @@ void FrameRing::Impl::initialize(const VkSwapchainCreateInfoKHR &ci, Transport k
         if (!copyTrace)
             throw std::runtime_error("Cannot open the GPU copy trace");
         if (std::fseek(copyTrace, 0, SEEK_END) == 0 && std::ftell(copyTrace) == 0)
-            std::fputs("sequence,presented_ns,frame_id,slot,producer_waits,submit_enter_ns,submit_exit_ns,commit_ns,fence_ns,batch_begin_tick,copy_begin_tick,copy_end_tick,batch_end_tick,clock_ticks,clock_ns,clock_deviation_ns,tick_period_ns,timestamp_mask,sdma_engine\n", copyTrace);
+            std::fputs("sequence,presented_ns,frame_id,slot,producer_waits,submit_enter_ns,submit_exit_ns,commit_ns,fence_ns,batch_begin_tick,copy_begin_tick,copy_end_tick,batch_end_tick,clock_ticks,clock_ns,clock_deviation_ns,tick_period_ns,timestamp_mask\n", copyTrace);
         queriesPerSlot = 4;
     }
     if (const auto *path = std::getenv("V3_TRACE"); path && *path) {
@@ -561,7 +561,9 @@ void FrameRing::Impl::initialize(const VkSwapchainCreateInfoKHR &ci, Transport k
         }
     }
 
-    if (trace || copyTrace) {
+    const auto *gpuTimestamps = std::getenv("V3_GPU_TIMESTAMPS");
+    const bool queryTiming = !gpuTimestamps || std::strcmp(gpuTimestamps, "0") != 0;
+    if ((trace || copyTrace) && queryTiming) {
         VkPhysicalDeviceProperties properties{};
         VK_P(GetPhysicalDeviceProperties)(vk.physical, &properties);
         timestampPeriod = properties.limits.timestampPeriod;
@@ -569,8 +571,10 @@ void FrameRing::Impl::initialize(const VkSwapchainCreateInfoKHR &ci, Transport k
         VK_P(GetPhysicalDeviceQueueFamilyProperties)(vk.physical, &familyCount, nullptr);
         std::vector<VkQueueFamilyProperties> queueProperties(familyCount);
         VK_P(GetPhysicalDeviceQueueFamilyProperties)(vk.physical, &familyCount, queueProperties.data());
-        const auto bits = queueProperties.at(copyFamily).timestampValidBits;
-        if (bits) {
+        const auto &copyProperties = queueProperties.at(copyFamily);
+        const auto bits = copyProperties.timestampValidBits;
+        // Timestamp bits alone do not permit vkCmdResetQueryPool on a transfer-only queue.
+        if (bits && (copyProperties.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
             timestampMask = bits == 64 ? UINT64_MAX : (uint64_t{1} << bits) - 1;
             VkQueryPoolCreateInfo create{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             create.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -1121,7 +1125,7 @@ void FrameRing::Impl::finishSample(const Slot &slot, Sample &sample) const {
 }
 
 void FrameRing::Impl::writeCopySample(const Sample &sample, const DesktopFeedback &event) {
-    if (vk.calibrate && event.presentedNs > lastCalibration + 1'000'000'000) {
+    if (queryPool && vk.calibrate && event.presentedNs > lastCalibration + 1'000'000'000) {
         const VkCalibratedTimestampInfoKHR domains[] = {
             {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, VK_TIME_DOMAIN_DEVICE_KHR},
             {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR},
@@ -1131,12 +1135,11 @@ void FrameRing::Impl::writeCopySample(const Sample &sample, const DesktopFeedbac
         lastCalibration = event.presentedNs;
     }
     using U = unsigned long long;
-    std::fprintf(copyTrace, "%llu,%llu,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.9g,%llu,%d\n",
+    std::fprintf(copyTrace, "%llu,%llu,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.9g,%llu\n",
                  U(event.sequence), U(event.presentedNs), U(sample.frame), sample.slot, sample.producerWaits,
                  U(sample.before), U(sample.after), U(event.commitNs), U(event.sourceReadyNs),
                  U(sample.copyTicks[0]), U(sample.copyTicks[1]), U(sample.copyTicks[2]), U(sample.copyTicks[3]),
-                 U(calibration[0]), U(calibration[1]), U(clockDeviation), double(timestampPeriod), U(timestampMask),
-                 event.dmaEngine);
+                 U(calibration[0]), U(calibration[1]), U(clockDeviation), double(timestampPeriod), U(timestampMask));
 }
 
 void FrameRing::Impl::feedback() {
